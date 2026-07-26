@@ -150,8 +150,26 @@ cleared_user_bindings AS (
 cleared_binding_tokens AS (
     DELETE FROM channel_binding_token WHERE workspace_id = $1
 ),
+cleared_account_binding_tokens AS (
+    DELETE FROM channel_account_binding_token
+    WHERE installation_id IN (SELECT id FROM ws_installations)
+),
+cleared_account_bindings AS (
+    DELETE FROM channel_account_binding
+    WHERE installation_id IN (SELECT id FROM ws_installations)
+),
 cleared_installations AS (
     DELETE FROM channel_installation WHERE workspace_id = $1
+),
+cleared_workspace_channel_settings AS (
+    DELETE FROM workspace_channel_setting WHERE workspace_id = $1
+),
+cleared_pending_dispatches AS (
+    DELETE FROM channel_pending_dispatch
+    WHERE public_workspace_id = $1 OR target_workspace_id = $1
+),
+cleared_notification_deliveries AS (
+    DELETE FROM channel_notification_delivery WHERE workspace_id = $1
 ),
 cleared_issue_properties AS (
     DELETE FROM issue_property WHERE workspace_id = $1

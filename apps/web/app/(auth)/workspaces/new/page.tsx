@@ -1,15 +1,16 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
 import { paths } from "@multica/core/paths";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
 import { NewWorkspacePage } from "@multica/views/workspace/new-workspace-page";
 
-export default function Page() {
+function NewWorkspacePageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
   const { data: wsList = [] } = useQuery({
@@ -31,8 +32,19 @@ export default function Page() {
 
   return (
     <NewWorkspacePage
-      onSuccess={(ws) => router.push(paths.workspace(ws.slug).issues())}
+      onSuccess={(ws) => {
+        const next = searchParams.get("next");
+        router.push(next?.startsWith("/") && !next.startsWith("//") ? next : paths.workspace(ws.slug).issues());
+      }}
       onBack={onBack}
     />
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={null}>
+      <NewWorkspacePageContent />
+    </Suspense>
   );
 }

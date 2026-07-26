@@ -2,12 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -424,6 +426,13 @@ func (h *Handler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to create membership")
+		return
+	}
+	if _, err := qtx.SetDefaultWorkspaceIfUnset(r.Context(), db.SetDefaultWorkspaceIfUnsetParams{
+		WorkspaceID: accepted.WorkspaceID,
+		UserID:      user.ID,
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to set default workspace")
 		return
 	}
 

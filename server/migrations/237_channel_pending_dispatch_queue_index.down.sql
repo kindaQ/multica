@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS channel_pending_dispatch_queue_idx;

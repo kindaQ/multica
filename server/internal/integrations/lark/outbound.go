@@ -376,6 +376,7 @@ func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentia
 			_, err := p.client.SendMarkdownCard(ctx, SendMarkdownCardParams{
 				InstallationID: creds,
 				ChatID:         outboundChatID(binding),
+				OpenID:         outboundOpenID(binding),
 				Markdown:       content,
 				ReplyTarget:    t,
 			})
@@ -386,6 +387,7 @@ func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentia
 		_, err := p.client.SendTextMessage(ctx, SendTextParams{
 			InstallationID: creds,
 			ChatID:         outboundChatID(binding),
+			OpenID:         outboundOpenID(binding),
 			Text:           content,
 			ReplyTarget:    t,
 		})
@@ -406,6 +408,16 @@ func outboundChatID(b ChatSessionBinding) ChatID {
 		}
 	}
 	return ChatID(b.ChannelChatID)
+}
+
+func outboundOpenID(b ChatSessionBinding) OpenID {
+	if len(b.Config) > 0 {
+		var cfg larkBindingConfig
+		if err := json.Unmarshal(b.Config, &cfg); err == nil && cfg.OpenID != "" {
+			return OpenID(cfg.OpenID)
+		}
+	}
+	return ""
 }
 
 // threadReplyTarget derives the outbound reply target from the chat

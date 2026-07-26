@@ -51,7 +51,9 @@
     "error_expired": "绑定链接无效或已过期（有效期 15 分钟）。请让 Bot 重新发送一份。",
     "error_already_bound": "该飞书账号已绑定到其他 Multica 用户。账户转移需要先显式解绑。",
     "error_not_member": "你登录的 Multica 账号不是当前工作区成员。",
-    "error_unknown": "出现未知错误。请稍后再试，如反复失败请联系工作区管理员。"
+    "error_unknown": "出现未知错误。请稍后再试，如反复失败请联系工作区管理员。",
+    "needs_workspace_description": "请先创建一个 workspace，创建完成后会继续绑定飞书账号。",
+    "create_workspace": "创建 workspace"
   },
   "slack_bind": {
     "page_title": "关联 Slack 账号",

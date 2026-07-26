@@ -442,6 +442,9 @@ func main() {
 	if h.ChannelSupervisor != nil {
 		go h.ChannelSupervisor.Run(sweepCtx)
 	}
+	if h.LarkNotifications != nil {
+		go h.LarkNotifications.Run(sweepCtx)
+	}
 
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the
 	// `sys_cron_executions` table into the distributed lease + audit

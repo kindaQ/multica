@@ -264,7 +264,22 @@
     "toast_avatar_updated": "Avatar updated",
     "toast_avatar_failed": "Failed to upload avatar",
     "toast_profile_updated": "Profile updated",
-    "toast_profile_failed": "Failed to update profile"
+    "toast_profile_failed": "Failed to update profile",
+    "lark_gateway": {
+      "title": "Public Feishu bot",
+      "description": "Choose the default workspace for Feishu direct messages and manage your Feishu account binding.",
+      "default_workspace": "Default workspace",
+      "default_workspace_description": "When the public bot receives your Feishu message, it looks for the default Agent in this workspace.",
+      "default_workspace_updated": "Default workspace updated",
+      "default_workspace_failed": "Failed to update the default workspace",
+      "account_binding": "Feishu account binding",
+      "bound_description": "Bound to the public Feishu bot. Workspace notifications can be sent to your direct messages.",
+      "unbound_description": "Not bound. Send a direct message to the public bot in Feishu and open the binding link it returns.",
+      "unbound_success": "Feishu account unbound",
+      "unbound_failed": "Failed to unbind",
+      "unbind": "Unbind",
+      "waiting_for_binding": "Waiting for Feishu binding"
+    }
   },
   "notifications": {
     "title": "Inbox Notifications",
@@ -305,6 +320,20 @@
       "granted": "This browser can show notification banners.",
       "denied": "Blocked by your browser. Enable notifications for this site in your browser settings.",
       "enabled_badge": "Enabled"
+    },
+    "feishu": {
+      "title": "Feishu direct-message notifications and routing",
+      "description": "The public bot routes your messages to the default Agent. When an issue is completed or blocked, the same bot sends a direct-message notification to the selected member.",
+      "default_agent": "Default message Agent",
+      "default_agent_description": "Handles messages routed from the public Feishu bot to this workspace.",
+      "recipient": "Feishu notification recipient",
+      "recipient_bound_description": "Each workspace can have one recipient, and that member must be bound to the public bot.",
+      "recipient_unbound_description": "You have not bound the public Feishu bot yet. A recipient must first bind by sending the bot a direct message.",
+      "issue_status": "Issue status notifications",
+      "issue_status_description": "Send a Feishu direct message when an issue becomes completed or blocked.",
+      "not_configured": "Not configured",
+      "saved": "Feishu settings saved",
+      "save_failed": "Failed to save Feishu settings"
     }
   },
   "tokens": {
@@ -561,7 +590,22 @@
     "install_error_installer_bind": "Installed the bot, but could not bind your Lark identity. Try again or contact support.",
     "install_error_session_lost": "Install session expired or was lost. Scan again to start over.",
     "install_error_forbidden": "You no longer have permission to install Lark Bots in this workspace. Ask a workspace admin to continue.",
-    "install_error_generic": "Install failed. Try again."
+    "install_error_generic": "Install failed. Try again.",
+    "public_gateway": {
+      "title": "Public Feishu bot",
+      "description": "Receives user messages in one place and sends workspace notifications by direct message.",
+      "connected": "Connected",
+      "starting": "Starting…",
+      "initialize": "Initialize and connect",
+      "connect": "Connect bot",
+      "dialog_title": "Connect the public Feishu bot",
+      "dialog_description": "Use the super administrator's Feishu account to scan the QR code and create the bot.",
+      "cancel": "Cancel",
+      "connected_toast": "Public Feishu bot connected",
+      "connect_failed": "Failed to connect the public Feishu bot",
+      "status_failed": "Failed to check installation status",
+      "start_failed": "Failed to start public bot installation"
+    }
   },
   "composio": {
     "section_title": "Composio",

@@ -85,6 +85,13 @@ func (d *LarkJSONFrameDecoder) Decode(payload []byte, inst Installation) (Inboun
 		// reply back into that thread; empty means a normal chat message.
 		ThreadID: evt.Message.ThreadID,
 	}
+	for _, mention := range evt.Message.Mentions {
+		msg.Mentions = append(msg.Mentions, InboundMention{
+			OpenID:  mention.ID.OpenID,
+			UnionID: mention.ID.UnionID,
+			Name:    mention.Name,
+		})
+	}
 
 	botUnionID := ""
 	if inst.BotUnionID.Valid {

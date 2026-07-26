@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS channel_account_binding_multica_user_idx;

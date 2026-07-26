@@ -39,6 +39,7 @@ import (
 	composiosdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 var defaultOrigins = []string{
@@ -268,10 +269,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// into one agent run instead of one per message (MUL-2968).
 	channelRouter.EnableRunBatching(engine.DefaultChatRunBatchWindow)
 	h.ChannelRouter = channelRouter
+	inboundHandler := channel.InboundHandler(channelRouter.Handle)
 	h.ChannelSupervisor = engine.NewSupervisor(
 		lark.NewChannelInstallationStore(queries),
 		channelRegistry,
-		channelRouter.Handle,
+		func(ctx context.Context, msg channel.InboundMessage) error {
+			return inboundHandler(ctx, msg)
+		},
 		engine.Config{},
 	)
 
@@ -294,6 +298,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			} else {
 				h.LarkInstallations = installSvc
 				h.LarkBindingTokens = lark.NewBindingTokenService(queries, pool)
+				h.LarkAccountBindings = lark.NewAccountBindingService(queries, pool)
 				slog.Info("lark integration enabled")
 
 				// APIClient: wire the real Lark Open Platform HTTP client
@@ -395,6 +400,24 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				channelRouter.Register(channel.TypeFeishu, lark.NewFeishuResolverSet(
 					cs, feishuSession, auditLogger, resolverReplier, typingIndicator,
 				))
+				publicGateway, gatewayErr := lark.NewPublicGateway(lark.PublicGatewayConfig{
+					Queries:     queries,
+					Bindings:    h.LarkAccountBindings,
+					Client:      larkClient,
+					Credentials: installSvc,
+					AppURL:      appURLFromEnv(),
+					Next:        channelRouter.Handle,
+					Logger:      slog.Default(),
+					Tx:          pool,
+				})
+				if gatewayErr != nil {
+					slog.Error("lark public gateway init failed; public routing disabled", "error", gatewayErr)
+				} else {
+					inboundHandler = publicGateway.Handle
+				}
+				h.LarkNotifications = lark.NewNotificationService(
+					queries, larkClient, installSvc, bus, slog.Default(),
+				)
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
 				// One-shot union_id backfill for installations created
@@ -447,6 +470,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// connection badge refreshes on every workspace client, not just
 					// the tab that polls the install status to success.
 					regSvc.SetEventBus(bus)
+					reconcilePublicGateway := func() {
+						reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						if _, err := queries.ReconcileInstancePublicChannelInstallation(reconcileCtx); err != nil {
+							slog.Error("lark: reconcile public gateway installation", "error", err)
+						}
+					}
+					// Installation completion must not depend on the browser
+					// reaching the final status poll. Reconcile once at startup
+					// for crash recovery and again at the installation row's
+					// commit event.
+					reconcilePublicGateway()
+					bus.Subscribe(protocol.EventLarkInstallationCreated, func(events.Event) {
+						go reconcilePublicGateway()
+					})
 					h.LarkRegistration = regSvc
 					slog.Info("lark device-flow install enabled")
 				}
@@ -839,9 +877,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// --- User-scoped routes (no workspace context required) ---
 		r.Get("/api/me", h.GetMe)
 		r.Patch("/api/me", h.UpdateMe)
+		r.Get("/api/me/default-workspace", h.GetDefaultWorkspace)
+		r.Patch("/api/me/default-workspace", h.UpdateDefaultWorkspace)
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
 		r.Post("/api/me/onboarding/complete", h.CompleteOnboarding)
 		r.Post("/api/me/onboarding/cloud-waitlist", h.JoinCloudWaitlist)
+		r.Get("/api/instance/bootstrap", h.GetInstanceBootstrap)
+		r.Post("/api/instance/bootstrap", h.BootstrapInstance)
+		r.Post("/api/instance/lark/install/begin", h.BeginPublicLarkInstall)
+		r.Get("/api/instance/lark/install/{sessionId}/status", h.GetPublicLarkInstallStatus)
 		// DEPRECATED — shim routes for desktop < v3 during the rollout
 		// window. v3 frontend creates the Helper agent + starter issue
 		// via generic CreateAgent / CreateIssue and only calls /complete
@@ -884,6 +928,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
+					r.Get("/channel-settings/feishu", h.GetFeishuWorkspaceSetting)
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -906,6 +951,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					r.Patch("/channel-settings/feishu", h.UpdateFeishuWorkspaceSetting)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -986,6 +1032,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// the token only proves "this open_id requested binding," and
 		// is combined with the logged-in user to create the mapping.
 		r.Post("/api/lark/binding/redeem", h.RedeemLarkBindingToken)
+		r.Post("/api/lark/account-binding/redeem", h.RedeemLarkAccountBindingToken)
+		r.Get("/api/me/channel-bindings/feishu", h.GetLarkAccountBinding)
+		r.Delete("/api/me/channel-bindings/feishu", h.DeleteLarkAccountBinding)
 		// Slack binding-token redemption. Same rationale as Lark: NOT
 		// workspace-scoped because the redeemer hits this before they have any
 		// workspace context — the redemption itself mints their binding row. The

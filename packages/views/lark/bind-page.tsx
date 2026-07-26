@@ -26,7 +26,13 @@ type RedeemState =
 // 409 (already bound to another user), 403 (not a workspace member)
 // or 200 with the bound installation. Each maps to distinct user-
 // facing copy via lark_bind in common.json.
-export function LarkBindPage({ token }: { token: string | null }) {
+export function LarkBindPage({
+  token,
+  mode = "workspace",
+}: {
+  token: string | null;
+  mode?: "workspace" | "account";
+}) {
   const { t } = useT("common");
   const user = useAuthStore((s) => s.user);
   const isAuthLoading = useAuthStore((s) => s.isLoading);
@@ -47,10 +53,14 @@ export function LarkBindPage({ token }: { token: string | null }) {
     setState({ kind: "redeeming" });
     (async () => {
       try {
-        const resp = await api.redeemLarkBindingToken(token);
+        const resp =
+          mode === "account"
+            ? await api.redeemLarkAccountBindingToken(token)
+            : await api.redeemLarkBindingToken(token);
         setState({
           kind: "done",
-          workspaceId: resp.workspace_id,
+          workspaceId:
+            "workspace_id" in resp ? resp.workspace_id : resp.default_workspace_id,
           installationId: resp.installation_id,
         });
       } catch (e) {
@@ -60,7 +70,7 @@ export function LarkBindPage({ token }: { token: string | null }) {
         });
       }
     })();
-  }, [token, user, isAuthLoading, state.kind]);
+  }, [token, mode, user, isAuthLoading, state.kind]);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center p-6">
@@ -79,7 +89,7 @@ export function LarkBindPage({ token }: { token: string | null }) {
                 onClick={() =>
                   navigation.push(
                     `/login?next=${encodeURIComponent(
-                      `/lark/bind?token=${encodeURIComponent(token ?? "")}`,
+                      `/lark/bind?mode=${mode}&token=${encodeURIComponent(token ?? "")}`,
                     )}`,
                   )
                 }
@@ -108,11 +118,27 @@ export function LarkBindPage({ token }: { token: string | null }) {
                       return t(($) => $.lark_bind.error_already_bound);
                     case "not_member":
                       return t(($) => $.lark_bind.error_not_member);
+                    case "needs_workspace":
+                      return t(($) => $.lark_bind.needs_workspace_description);
                     default:
                       return t(($) => $.lark_bind.error_unknown);
                   }
                 })()}
               </p>
+              {state.reason === "needs_workspace" ? (
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    navigation.push(
+                      `/workspaces/new?next=${encodeURIComponent(
+                        `/lark/bind?mode=${mode}&token=${encodeURIComponent(token ?? "")}`,
+                      )}`,
+                    )
+                  }
+                >
+                  {t(($) => $.lark_bind.create_workspace)}
+                </Button>
+              ) : null}
               <p className="text-[10px] text-muted-foreground">
                 {t(($) => $.lark_bind.error_admin_hint)}
               </p>
@@ -129,6 +155,9 @@ function redemptionFailureReason(err: unknown): string {
   const lower = msg.toLowerCase();
   if (lower.includes("invalid") || lower.includes("expired") || lower.includes("410")) {
     return "expired";
+  }
+  if (lower.includes("create a workspace")) {
+    return "needs_workspace";
   }
   if (lower.includes("already bound") || lower.includes("409")) {
     return "already_bound";

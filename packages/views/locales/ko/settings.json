@@ -256,7 +256,22 @@
     "toast_avatar_updated": "아바타를 업데이트했습니다",
     "toast_avatar_failed": "아바타를 업로드하지 못했습니다",
     "toast_profile_updated": "프로필을 업데이트했습니다",
-    "toast_profile_failed": "프로필을 업데이트하지 못했습니다"
+    "toast_profile_failed": "프로필을 업데이트하지 못했습니다",
+    "lark_gateway": {
+      "title": "공용 Feishu 봇",
+      "description": "Feishu 다이렉트 메시지가 들어갈 기본 워크스페이스를 선택하고 계정 연결을 관리합니다.",
+      "default_workspace": "기본 워크스페이스",
+      "default_workspace_description": "공용 봇이 Feishu 메시지를 받으면 이 워크스페이스의 기본 에이전트로 전달합니다.",
+      "default_workspace_updated": "기본 워크스페이스를 업데이트했습니다",
+      "default_workspace_failed": "기본 워크스페이스를 업데이트하지 못했습니다",
+      "account_binding": "Feishu 계정 연결",
+      "bound_description": "공용 Feishu 봇에 연결되었습니다. 워크스페이스 알림을 다이렉트 메시지로 받을 수 있습니다.",
+      "unbound_description": "연결되지 않았습니다. Feishu에서 공용 봇에게 다이렉트 메시지를 보내고 받은 연결 링크를 여세요.",
+      "unbound_success": "Feishu 계정 연결을 해제했습니다",
+      "unbound_failed": "연결을 해제하지 못했습니다",
+      "unbind": "연결 해제",
+      "waiting_for_binding": "Feishu 연결 대기 중"
+    }
   },
   "notifications": {
     "title": "인박스 알림",
@@ -297,6 +312,20 @@
       "granted": "이 브라우저에서 알림 배너를 표시할 수 있습니다.",
       "denied": "브라우저에서 차단되었습니다. 브라우저 설정에서 이 사이트의 알림을 허용하세요.",
       "enabled_badge": "사용 중"
+    },
+    "feishu": {
+      "title": "Feishu 다이렉트 메시지 알림 및 라우팅",
+      "description": "공용 봇은 메시지를 기본 에이전트로 전달합니다. issue가 완료되거나 차단되면 같은 봇이 선택한 멤버에게 다이렉트 메시지로 알립니다.",
+      "default_agent": "기본 메시지 에이전트",
+      "default_agent_description": "공용 Feishu 봇에서 이 워크스페이스로 전달된 메시지를 처리합니다.",
+      "recipient": "Feishu 알림 수신자",
+      "recipient_bound_description": "워크스페이스마다 수신자는 한 명만 선택할 수 있으며, 해당 멤버는 공용 봇에 연결되어 있어야 합니다.",
+      "recipient_unbound_description": "공용 Feishu 봇에 아직 연결하지 않았습니다. 수신자는 먼저 봇에게 다이렉트 메시지를 보내 연결해야 합니다.",
+      "issue_status": "Issue 상태 알림",
+      "issue_status_description": "issue가 완료 또는 차단 상태가 되면 Feishu 다이렉트 메시지를 보냅니다.",
+      "not_configured": "설정되지 않음",
+      "saved": "Feishu 설정을 저장했습니다",
+      "save_failed": "Feishu 설정을 저장하지 못했습니다"
     }
   },
   "tokens": {
@@ -637,7 +666,22 @@
     "install_error_installer_bind": "봇은 설치되었지만 Lark 신원을 연결하지 못했어요. 다시 시도하거나 지원팀에 문의하세요.",
     "install_error_session_lost": "설치 세션이 만료되었거나 유실되었어요. 다시 스캔해 처음부터 진행하세요.",
     "install_error_forbidden": "이 워크스페이스에 Lark 봇을 설치할 권한이 더 이상 없어요. 워크스페이스 관리자에게 문의하세요.",
-    "install_error_generic": "설치에 실패했어요. 다시 시도하세요."
+    "install_error_generic": "설치에 실패했어요. 다시 시도하세요.",
+    "public_gateway": {
+      "title": "공용 Feishu 봇",
+      "description": "사용자 메시지를 한곳에서 받고 워크스페이스 알림을 다이렉트 메시지로 보냅니다.",
+      "connected": "연결됨",
+      "starting": "시작 중…",
+      "initialize": "초기화 및 연결",
+      "connect": "봇 연결",
+      "dialog_title": "공용 Feishu 봇 연결",
+      "dialog_description": "슈퍼 관리자의 Feishu 계정으로 QR 코드를 스캔하여 봇을 만드세요.",
+      "cancel": "취소",
+      "connected_toast": "공용 Feishu 봇을 연결했습니다",
+      "connect_failed": "공용 Feishu 봇을 연결하지 못했습니다",
+      "status_failed": "설치 상태를 확인하지 못했습니다",
+      "start_failed": "공용 봇 설치를 시작하지 못했습니다"
+    }
   },
   "composio": {
     "section_title": "Composio",

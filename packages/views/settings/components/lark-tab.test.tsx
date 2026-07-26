@@ -101,7 +101,14 @@ vi.mock("@multica/core/lark", () => ({
     queryKey: ["lark", "installations"],
     queryFn: vi.fn(),
   }),
-  larkKeys: { installations: (wsId: string) => ["lark", "installations", wsId] },
+  instanceBootstrapOptions: () => ({
+    queryKey: ["lark", "instance"],
+    queryFn: vi.fn(),
+  }),
+  larkKeys: {
+    installations: (wsId: string) => ["lark", "installations", wsId],
+    instance: () => ["lark", "instance"],
+  },
 }));
 
 vi.mock("@multica/core/api", () => ({

@@ -18,6 +18,41 @@ INSERT INTO "user" (name, email, avatar_url)
 VALUES ($1, $2, $3)
 RETURNING *;
 
+-- name: SetDefaultWorkspaceIfUnset :one
+UPDATE "user"
+SET default_workspace_id = @workspace_id,
+    updated_at = now()
+WHERE id = @user_id
+  AND default_workspace_id IS NULL
+RETURNING *;
+
+-- name: SetDefaultWorkspace :one
+UPDATE "user"
+SET default_workspace_id = @workspace_id,
+    updated_at = now()
+WHERE id = @user_id
+RETURNING *;
+
+-- name: ReplaceDefaultWorkspaceOnMembershipRemoval :one
+UPDATE "user" u
+SET default_workspace_id = (
+        SELECT m.workspace_id
+        FROM member m
+        WHERE m.user_id = @user_id
+          AND m.workspace_id <> @removed_workspace_id
+          AND m.workspace_id IS DISTINCT FROM (
+              SELECT public_workspace_id
+              FROM instance_state
+              WHERE singleton_key = 1
+          )
+        ORDER BY m.created_at ASC, m.workspace_id ASC
+        LIMIT 1
+    ),
+    updated_at = now()
+WHERE u.id = @user_id
+  AND u.default_workspace_id = @removed_workspace_id
+RETURNING *;
+
 -- name: UpdateUser :one
 -- Patches the user-controlled profile fields. Each parameter follows
 -- COALESCE-on-NULL semantics so the handler can omit any field it

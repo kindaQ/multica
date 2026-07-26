@@ -1934,6 +1934,15 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	if !h.canManageAgent(w, r, agent) {
 		return
 	}
+	protected, err := h.isPublicAgent(r.Context(), agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify protected agent")
+		return
+	}
+	if protected {
+		writeError(w, http.StatusConflict, "the public gateway agent cannot be archived")
+		return
+	}
 	if agent.ArchivedAt.Valid {
 		writeError(w, http.StatusConflict, "agent is already archived")
 		return
@@ -1948,6 +1957,9 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("archive agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to archive agent")
 		return
+	}
+	if _, err := h.Queries.ClearWorkspaceChannelDefaultAgent(r.Context(), agent.ID); err != nil {
+		slog.Warn("clear default channel agent after archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 	}
 
 	// Cancel all pending/active tasks for this agent. Discard the returned

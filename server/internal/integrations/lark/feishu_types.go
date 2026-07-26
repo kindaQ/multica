@@ -54,6 +54,16 @@ type InboundMessage struct {
 	// enricher prepends quoted/forwarded context). `/issue` is parsed from
 	// THIS, not the enriched Body.
 	CommandBody string
+	// Mentions preserves the platform identities carried by a group command.
+	// The public gateway uses them to resolve an explicit dispatch target;
+	// ordinary agent routing ignores this field.
+	Mentions []InboundMention
+}
+
+type InboundMention struct {
+	OpenID  string
+	UnionID string
+	Name    string
 }
 
 // Outcome categorizes what the inbound pipeline decided. The OutcomeReplier

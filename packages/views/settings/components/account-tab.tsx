@@ -1,11 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import { Button } from "@multica/ui/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 import { toast } from "sonner";
 import { useAuthStore } from "@multica/core/auth";
 import { api } from "@multica/core/api";
+import { larkAccountBindingOptions, larkKeys } from "@multica/core/lark";
+import { workspaceListOptions } from "@multica/core/workspace/queries";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useT } from "../../i18n";
 import {
@@ -36,6 +47,13 @@ export function AccountTab() {
   const { t } = useT("settings");
   const user = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
+  const queryClient = useQueryClient();
+  const { data: workspaces = [] } = useQuery(workspaceListOptions());
+  const { data: larkBinding } = useQuery(larkAccountBindingOptions());
+  const workspaceOptions = workspaces.map((workspace) => ({
+    value: workspace.id,
+    label: workspace.name,
+  }));
 
   const [profileName, setProfileName] = useState(user?.name ?? "");
   const [profileDescription, setProfileDescription] = useState(
@@ -187,6 +205,91 @@ export function AccountTab() {
                 </p>
               ) : null}
             </div>
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t(($) => $.account.lark_gateway.title)}
+        description={t(($) => $.account.lark_gateway.description)}
+      >
+        <SettingsCard>
+          <SettingsRow
+            label={t(($) => $.account.lark_gateway.default_workspace)}
+            description={t(($) => $.account.lark_gateway.default_workspace_description)}
+          >
+            <Select
+              items={workspaceOptions}
+              value={user?.default_workspace_id ?? workspaces[0]?.id ?? ""}
+              onValueChange={async (workspaceId) => {
+                if (!workspaceId) return;
+                try {
+                  await api.updateDefaultWorkspace(workspaceId);
+                  if (user) setUser({ ...user, default_workspace_id: workspaceId });
+                  toast.success(t(($) => $.account.lark_gateway.default_workspace_updated), {
+                    id: "settings-auto-save",
+                  });
+                } catch (error) {
+                  toast.error(
+                    error instanceof Error
+                      ? error.message
+                      : t(($) => $.account.lark_gateway.default_workspace_failed),
+                  );
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-48">
+                <SelectValue>
+                  {workspaceOptions.find(
+                    (workspace) =>
+                      workspace.value ===
+                      (user?.default_workspace_id ?? workspaces[0]?.id),
+                  )?.label}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {workspaces.map((workspace) => (
+                  <SelectItem key={workspace.id} value={workspace.id}>
+                    {workspace.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.account.lark_gateway.account_binding)}
+            description={
+              larkBinding?.bound
+                ? t(($) => $.account.lark_gateway.bound_description)
+                : t(($) => $.account.lark_gateway.unbound_description)
+            }
+          >
+            {larkBinding?.bound ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    await api.deleteLarkAccountBinding();
+                    await queryClient.invalidateQueries({ queryKey: larkKeys.accountBinding() });
+                    toast.success(t(($) => $.account.lark_gateway.unbound_success));
+                  } catch (error) {
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : t(($) => $.account.lark_gateway.unbound_failed),
+                    );
+                  }
+                }}
+              >
+                {t(($) => $.account.lark_gateway.unbind)}
+              </Button>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {t(($) => $.account.lark_gateway.waiting_for_binding)}
+              </span>
+            )}
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>

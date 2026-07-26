@@ -11,7 +11,8 @@ import { LarkBindPage } from "@multica/views/lark";
 function LarkBindPageContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token");
-  return <LarkBindPage token={token} />;
+  const mode = searchParams.get("mode") === "account" ? "account" : "workspace";
+  return <LarkBindPage token={token} mode={mode} />;
 }
 
 export default function Page() {

@@ -148,6 +148,12 @@ func (h *Handler) RevokeLarkInstallation(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "failed to load installation")
 		return
 	}
+	if state, stateErr := h.Queries.GetInstanceState(r.Context()); stateErr == nil &&
+		state.PublicChannelInstallationID.Valid &&
+		state.PublicChannelInstallationID == inst.ID {
+		writeError(w, http.StatusConflict, "the public bot installation is managed at the instance level")
+		return
+	}
 	// Authorize against the bound agent. Normally its owner or a workspace
 	// owner/admin may revoke (canManageAgent writes the 403/404 itself).
 	// If the agent has been hard-deleted the installation is an orphan, so
@@ -252,6 +258,131 @@ func (h *Handler) RedeemLarkBindingToken(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+type RedeemLarkAccountBindingResponse struct {
+	InstallationID     string `json:"installation_id"`
+	LarkOpenID         string `json:"lark_open_id"`
+	DefaultWorkspaceID string `json:"default_workspace_id"`
+}
+
+// RedeemLarkAccountBindingToken binds a public-bot open_id to the authenticated
+// Multica account. The account must already have at least one workspace; the
+// bind page resumes onboarding first when it does not.
+func (h *Handler) RedeemLarkAccountBindingToken(w http.ResponseWriter, r *http.Request) {
+	if h.LarkAccountBindings == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	var req RedeemLarkBindingTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Token = strings.TrimSpace(req.Token)
+	if req.Token == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+	redeemed, err := h.LarkAccountBindings.Redeem(r.Context(), req.Token, parseUUID(userID))
+	if err != nil {
+		switch {
+		case errors.Is(err, lark.ErrBindingTokenInvalid):
+			writeError(w, http.StatusGone, "binding token invalid or expired")
+		case errors.Is(err, lark.ErrBindingAlreadyAssigned):
+			writeError(w, http.StatusConflict, "this Lark account or Multica account is already assigned")
+		case errors.Is(err, lark.ErrAccountBindingNeedsWorkspace):
+			writeError(w, http.StatusConflict, "create a workspace before binding your Lark account")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to redeem account binding token")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, RedeemLarkAccountBindingResponse{
+		InstallationID:     uuidToString(redeemed.InstallationID),
+		LarkOpenID:         string(redeemed.LarkOpenID),
+		DefaultWorkspaceID: uuidToString(redeemed.DefaultWorkspaceID),
+	})
+}
+
+type LarkAccountBindingResponse struct {
+	Bound          bool    `json:"bound"`
+	InstallationID *string `json:"installation_id"`
+	LarkOpenID     *string `json:"lark_open_id"`
+	BoundAt        *string `json:"bound_at"`
+}
+
+func (h *Handler) GetLarkAccountBinding(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	state, err := h.Queries.GetInstanceState(r.Context())
+	if err != nil || !state.PublicChannelInstallationID.Valid {
+		writeJSON(w, http.StatusOK, LarkAccountBindingResponse{Bound: false})
+		return
+	}
+	binding, err := h.Queries.GetChannelAccountBindingByMulticaUser(r.Context(), db.GetChannelAccountBindingByMulticaUserParams{
+		InstallationID: state.PublicChannelInstallationID,
+		MulticaUserID:  parseUUID(userID),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, LarkAccountBindingResponse{Bound: false})
+		return
+	}
+	installationID := uuidToString(binding.InstallationID)
+	openID := binding.ChannelUserID
+	boundAt := timestampToString(binding.BoundAt)
+	writeJSON(w, http.StatusOK, LarkAccountBindingResponse{
+		Bound:          true,
+		InstallationID: &installationID,
+		LarkOpenID:     &openID,
+		BoundAt:        &boundAt,
+	})
+}
+
+func (h *Handler) DeleteLarkAccountBinding(w http.ResponseWriter, r *http.Request) {
+	if h.LarkAccountBindings == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	state, err := h.Queries.GetInstanceState(r.Context())
+	if err != nil || !state.PublicChannelInstallationID.Valid {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unbind Lark account")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	userUUID := parseUUID(userID)
+	if _, err := qtx.ClearWorkspaceChannelRecipientByUser(r.Context(), userUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear Lark notification recipients")
+		return
+	}
+	if err := qtx.DeleteChannelAccountBindingByMulticaUser(r.Context(), db.DeleteChannelAccountBindingByMulticaUserParams{
+		InstallationID: state.PublicChannelInstallationID,
+		MulticaUserID:  userUUID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unbind Lark account")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit Lark account unbind")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // BeginLarkInstallResponse is the payload the QR-code dialog consumes.
 // The frontend renders `qr_code_url` as a QR image (and as a tap-to-
 // open link fallback) and starts polling
@@ -295,6 +426,13 @@ func (h *Handler) BeginLarkInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	agentUUID, ok := parseUUIDOrBadRequest(w, agentIDStr, "agent_id")
 	if !ok {
+		return
+	}
+	if publicWorkspace, err := h.isPublicWorkspace(r.Context(), wsUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify public gateway workspace")
+		return
+	} else if publicWorkspace {
+		writeError(w, http.StatusConflict, "install the public bot through the instance setup route")
 		return
 	}
 	// region is the cloud the user explicitly chose to bind against —
@@ -433,6 +571,111 @@ func (h *Handler) GetLarkInstallStatus(w http.ResponseWriter, r *http.Request) {
 		// registration_service.go finishSuccess), not here — that keeps
 		// the connection-badge refresh independent of whether any browser
 		// polls this status endpoint to success.
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// BeginPublicLarkInstall starts the one instance-level bot installation. The
+// public workspace and public agent come from instance_state, preventing the
+// gateway bot from being attached to a regular workspace agent.
+func (h *Handler) BeginPublicLarkInstall(w http.ResponseWriter, r *http.Request) {
+	if h.LarkRegistration == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark install not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	state, err := h.Queries.GetInstanceState(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "instance public gateway is not initialized")
+		return
+	}
+	if uuidToString(state.SuperAdminUserID) != userID {
+		writeError(w, http.StatusForbidden, "only the instance super administrator can install the public bot")
+		return
+	}
+	if !state.PublicWorkspaceID.Valid || !state.PublicAgentID.Valid {
+		writeError(w, http.StatusConflict, "initialize the public gateway before installing the bot")
+		return
+	}
+
+	regionParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("region")))
+	switch regionParam {
+	case "", "feishu", "lark":
+	default:
+		writeError(w, http.StatusBadRequest, "region must be 'feishu' or 'lark'")
+		return
+	}
+	res, err := h.LarkRegistration.BeginInstall(r.Context(), lark.BeginInstallParams{
+		WorkspaceID: state.PublicWorkspaceID,
+		AgentID:     state.PublicAgentID,
+		InitiatorID: state.SuperAdminUserID,
+		Region:      lark.Region(regionParam),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to start public bot install: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, BeginLarkInstallResponse{
+		SessionID:           res.SessionID,
+		QRCodeURL:           res.QRCodeURL,
+		ExpiresInSeconds:    res.ExpiresInSeconds,
+		PollIntervalSeconds: res.PollIntervalSeconds,
+	})
+}
+
+// GetPublicLarkInstallStatus promotes a successful device-flow installation to
+// the singleton public gateway installation. Repeated successful polls are
+// idempotent.
+func (h *Handler) GetPublicLarkInstallStatus(w http.ResponseWriter, r *http.Request) {
+	if h.LarkRegistration == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark install not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	instance, err := h.Queries.GetInstanceState(r.Context())
+	if err != nil || !instance.PublicWorkspaceID.Valid {
+		writeError(w, http.StatusServiceUnavailable, "instance public gateway is not initialized")
+		return
+	}
+	if uuidToString(instance.SuperAdminUserID) != userID {
+		writeError(w, http.StatusForbidden, "only the instance super administrator can inspect the public bot install")
+		return
+	}
+	sessionID := strings.TrimSpace(chi.URLParam(r, "sessionId"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+	state, err := h.LarkRegistration.GetSession(instance.PublicWorkspaceID, sessionID)
+	if err != nil {
+		if errors.Is(err, lark.ErrRegistrationSessionNotFound) {
+			writeError(w, http.StatusNotFound, "install session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load install session")
+		return
+	}
+
+	resp := LarkInstallStatusResponse{
+		Status:       string(state.Status),
+		ErrorReason:  state.ErrorReason,
+		ErrorMessage: state.ErrorMessage,
+	}
+	if state.InstallationID.Valid {
+		resp.InstallationID = uuidToString(state.InstallationID)
+		if _, err := h.Queries.SetInstancePublicChannelInstallation(r.Context(), db.SetInstancePublicChannelInstallationParams{
+			InstallationID:   state.InstallationID,
+			SuperAdminUserID: instance.SuperAdminUserID,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to activate public bot installation")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

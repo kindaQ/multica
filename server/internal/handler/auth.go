@@ -63,6 +63,7 @@ type UserResponse struct {
 	OnboardingQuestionnaire json.RawMessage `json:"onboarding_questionnaire"`
 	StarterContentState     *string         `json:"starter_content_state"`
 	ProfileDescription      string          `json:"profile_description"`
+	DefaultWorkspaceID      *string         `json:"default_workspace_id"`
 	CreatedAt               string          `json:"created_at"`
 	UpdatedAt               string          `json:"updated_at"`
 }
@@ -92,6 +93,7 @@ func userToResponse(u db.User) UserResponse {
 		OnboardingQuestionnaire: json.RawMessage(q),
 		StarterContentState:     textToPtr(u.StarterContentState),
 		ProfileDescription:      u.ProfileDescription,
+		DefaultWorkspaceID:      optionalUUIDString(u.DefaultWorkspaceID),
 		CreatedAt:               timestampToString(u.CreatedAt),
 		UpdatedAt:               timestampToString(u.UpdatedAt),
 	}
@@ -183,12 +185,45 @@ func (h *Handler) findOrCreateUser(ctx context.Context, email string) (user db.U
 	if at := strings.Index(email, "@"); at > 0 {
 		name = email[:at]
 	}
-	created, err := h.Queries.CreateUser(ctx, db.CreateUserParams{
+
+	// The first successfully-created account owns instance bootstrap. Claiming
+	// the singleton belongs in the same transaction as the user insert: a
+	// read-count-then-insert sequence would let two concurrent first signups
+	// both believe they are the super administrator.
+	//
+	// A nil TxStarter is retained as a narrow unit-test seam for the signup
+	// gating tests that use a query-only mock. Production handlers always carry
+	// the pgx pool as TxStarter (see handler.New).
+	if h.TxStarter == nil {
+		created, createErr := h.Queries.CreateUser(ctx, db.CreateUserParams{
+			Name:  name,
+			Email: email,
+		})
+		if createErr != nil {
+			return db.User{}, false, createErr
+		}
+		return created, true, nil
+	}
+
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.User{}, false, fmt.Errorf("begin user signup transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+
+	created, err := qtx.CreateUser(ctx, db.CreateUserParams{
 		Name:  name,
 		Email: email,
 	})
 	if err != nil {
 		return db.User{}, false, err
+	}
+	if _, err := qtx.ClaimInstanceSuperAdmin(ctx, created.ID); err != nil {
+		return db.User{}, false, fmt.Errorf("claim instance super administrator: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.User{}, false, fmt.Errorf("commit user signup transaction: %w", err)
 	}
 	return created, true, nil
 }

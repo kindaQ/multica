@@ -260,6 +260,28 @@ type AutopilotTrigger struct {
 	PublishedByID pgtype.UUID `json:"published_by_id"`
 }
 
+type ChannelAccountBinding struct {
+	ID             pgtype.UUID        `json:"id"`
+	InstallationID pgtype.UUID        `json:"installation_id"`
+	ChannelType    string             `json:"channel_type"`
+	ChannelUserID  string             `json:"channel_user_id"`
+	MulticaUserID  pgtype.UUID        `json:"multica_user_id"`
+	Config         []byte             `json:"config"`
+	BoundAt        pgtype.Timestamptz `json:"bound_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ChannelAccountBindingToken struct {
+	TokenHash       string             `json:"token_hash"`
+	InstallationID  pgtype.UUID        `json:"installation_id"`
+	ChannelType     string             `json:"channel_type"`
+	ChannelUserID   string             `json:"channel_user_id"`
+	SourceMessageID pgtype.Text        `json:"source_message_id"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt      pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChannelBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -319,6 +341,31 @@ type ChannelInstallation struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ChannelNotificationDelivery struct {
+	ID                     pgtype.UUID        `json:"id"`
+	IdempotencyKey         string             `json:"idempotency_key"`
+	EventType              string             `json:"event_type"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	IssueID                pgtype.UUID        `json:"issue_id"`
+	TaskID                 pgtype.UUID        `json:"task_id"`
+	ChatSessionID          pgtype.UUID        `json:"chat_session_id"`
+	InstallationID         pgtype.UUID        `json:"installation_id"`
+	RecipientUserID        pgtype.UUID        `json:"recipient_user_id"`
+	RecipientChannelUserID string             `json:"recipient_channel_user_id"`
+	Payload                []byte             `json:"payload"`
+	RenderVersion          int32              `json:"render_version"`
+	Status                 string             `json:"status"`
+	AttemptCount           int32              `json:"attempt_count"`
+	NextAttemptAt          pgtype.Timestamptz `json:"next_attempt_at"`
+	LeaseToken             pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt         pgtype.Timestamptz `json:"lease_expires_at"`
+	ChannelMessageID       pgtype.Text        `json:"channel_message_id"`
+	LastErrorCode          pgtype.Text        `json:"last_error_code"`
+	SentAt                 pgtype.Timestamptz `json:"sent_at"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ChannelOutboundCardMessage struct {
 	ID                   pgtype.UUID        `json:"id"`
 	ChatSessionID        pgtype.UUID        `json:"chat_session_id"`
@@ -329,6 +376,34 @@ type ChannelOutboundCardMessage struct {
 	Status               string             `json:"status"`
 	LastPatchedAt        pgtype.Timestamptz `json:"last_patched_at"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
+type ChannelPendingDispatch struct {
+	ID                        pgtype.UUID        `json:"id"`
+	InstallationID            pgtype.UUID        `json:"installation_id"`
+	ChannelType               string             `json:"channel_type"`
+	PublicWorkspaceID         pgtype.UUID        `json:"public_workspace_id"`
+	PublicChatSessionID       pgtype.UUID        `json:"public_chat_session_id"`
+	ChannelChatID             string             `json:"channel_chat_id"`
+	ChannelThreadID           pgtype.Text        `json:"channel_thread_id"`
+	ChannelMessageID          string             `json:"channel_message_id"`
+	SenderChannelUserID       string             `json:"sender_channel_user_id"`
+	SenderMulticaUserID       pgtype.UUID        `json:"sender_multica_user_id"`
+	Content                   string             `json:"content"`
+	SourcePayload             []byte             `json:"source_payload"`
+	Status                    string             `json:"status"`
+	DispatchMessageID         pgtype.Text        `json:"dispatch_message_id"`
+	DispatchedByChannelUserID pgtype.Text        `json:"dispatched_by_channel_user_id"`
+	DispatchedByMulticaUserID pgtype.UUID        `json:"dispatched_by_multica_user_id"`
+	TargetChannelUserID       pgtype.Text        `json:"target_channel_user_id"`
+	TargetMulticaUserID       pgtype.UUID        `json:"target_multica_user_id"`
+	TargetWorkspaceID         pgtype.UUID        `json:"target_workspace_id"`
+	TargetAgentID             pgtype.UUID        `json:"target_agent_id"`
+	TargetChatSessionID       pgtype.UUID        `json:"target_chat_session_id"`
+	DispatchedAt              pgtype.Timestamptz `json:"dispatched_at"`
+	FailureCode               pgtype.Text        `json:"failure_code"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ChannelUserBinding struct {
@@ -588,6 +663,18 @@ type InboxItem struct {
 	ActorType     pgtype.Text        `json:"actor_type"`
 	ActorID       pgtype.UUID        `json:"actor_id"`
 	Details       []byte             `json:"details"`
+}
+
+type InstanceState struct {
+	SingletonKey                int16              `json:"singleton_key"`
+	SuperAdminUserID            pgtype.UUID        `json:"super_admin_user_id"`
+	PublicWorkspaceID           pgtype.UUID        `json:"public_workspace_id"`
+	PublicAgentID               pgtype.UUID        `json:"public_agent_id"`
+	PublicChannelInstallationID pgtype.UUID        `json:"public_channel_installation_id"`
+	Status                      string             `json:"status"`
+	InitializedAt               pgtype.Timestamptz `json:"initialized_at"`
+	CreatedAt                   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Issue struct {
@@ -1028,7 +1115,8 @@ type User struct {
 	Language                pgtype.Text        `json:"language"`
 	ProfileDescription      string             `json:"profile_description"`
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
-	Timezone pgtype.Text `json:"timezone"`
+	Timezone           pgtype.Text `json:"timezone"`
+	DefaultWorkspaceID pgtype.UUID `json:"default_workspace_id"`
 }
 
 type UserComposioConnection struct {
@@ -1148,6 +1236,17 @@ type Workspace struct {
 	AvatarUrl    pgtype.Text        `json:"avatar_url"`
 	// When TRUE, an agent run that resolves to no precise accountable human (would be owner_fallback) is refused at enqueue instead of degrading to the agent owner (MUL-4302 §3.5). Default FALSE = owner_fallback. Never affects authorization (originator_user_id).
 	AttributionFailClosed bool `json:"attribution_fail_closed"`
+}
+
+type WorkspaceChannelSetting struct {
+	WorkspaceID                 pgtype.UUID        `json:"workspace_id"`
+	ChannelType                 string             `json:"channel_type"`
+	DefaultAgentID              pgtype.UUID        `json:"default_agent_id"`
+	NotificationRecipientUserID pgtype.UUID        `json:"notification_recipient_user_id"`
+	NotificationEnabled         bool               `json:"notification_enabled"`
+	NotificationEvents          []byte             `json:"notification_events"`
+	CreatedAt                   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkspaceInvitation struct {

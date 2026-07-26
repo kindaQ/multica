@@ -118,7 +118,6 @@ func (h *Handler) GetRuntimeUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "runtime not found")
 		return
 	}
-
 	if _, ok := h.requireWorkspaceMember(w, r, uuidToString(rt.WorkspaceID), "runtime not found"); !ok {
 		return
 	}
@@ -182,7 +181,6 @@ func (h *Handler) GetRuntimeTaskActivity(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "runtime not found")
 		return
 	}
-
 	if _, ok := h.requireWorkspaceMember(w, r, uuidToString(rt.WorkspaceID), "runtime not found"); !ok {
 		return
 	}
@@ -700,6 +698,13 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "runtime not found")
 		return
 	}
+	if protected, protectErr := h.isPublicWorkspace(r.Context(), rt.WorkspaceID); protectErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify protected runtime")
+		return
+	} else if protected {
+		writeError(w, http.StatusConflict, "the public gateway runtime cannot be deleted")
+		return
+	}
 
 	wsID := uuidToString(rt.WorkspaceID)
 	member, ok := h.requireWorkspaceMember(w, r, wsID, "runtime not found")
@@ -934,6 +939,13 @@ func (h *Handler) ArchiveAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.R
 	rt, err := h.Queries.GetAgentRuntime(r.Context(), runtimeUUID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "runtime not found")
+		return
+	}
+	if protected, protectErr := h.isPublicWorkspace(r.Context(), rt.WorkspaceID); protectErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify protected runtime")
+		return
+	} else if protected {
+		writeError(w, http.StatusConflict, "the public gateway runtime cannot be deleted")
 		return
 	}
 

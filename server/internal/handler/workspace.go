@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -108,9 +110,16 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]WorkspaceResponse, len(workspaces))
-	for i, ws := range workspaces {
-		resp[i] = workspaceToResponse(ws)
+	publicWorkspaceID := pgtype.UUID{}
+	if state, stateErr := h.Queries.GetInstanceState(r.Context()); stateErr == nil {
+		publicWorkspaceID = state.PublicWorkspaceID
+	}
+	resp := make([]WorkspaceResponse, 0, len(workspaces))
+	for _, ws := range workspaces {
+		if publicWorkspaceID.Valid && ws.ID == publicWorkspaceID {
+			continue
+		}
+		resp = append(resp, workspaceToResponse(ws))
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -125,6 +134,10 @@ func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := h.Queries.GetWorkspace(r.Context(), idUUID)
 	if err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if protected, protectErr := h.isPublicWorkspace(r.Context(), ws.ID); protectErr == nil && protected {
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
@@ -214,6 +227,13 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add owner: "+err.Error())
 		return
 	}
+	if _, err := qtx.SetDefaultWorkspaceIfUnset(r.Context(), db.SetDefaultWorkspaceIfUnsetParams{
+		WorkspaceID: ws.ID,
+		UserID:      parseUUID(userID),
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to set default workspace")
+		return
+	}
 
 	// NOTE: CreateWorkspace deliberately does NOT mark the user as
 	// onboarded. The `onboarded_at` flag is owned by CompleteOnboarding
@@ -296,6 +316,13 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := workspaceIDFromURL(r, "id")
 	idUUID, ok := parseUUIDOrBadRequest(w, id, "workspace id")
 	if !ok {
+		return
+	}
+	if protected, err := h.isPublicWorkspace(r.Context(), idUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify protected workspace")
+		return
+	} else if protected {
+		writeError(w, http.StatusConflict, "the public gateway workspace cannot be modified")
 		return
 	}
 
@@ -733,6 +760,15 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "insufficient permissions")
 		return
 	}
+	protected, err := h.isPublicWorkspace(r.Context(), requester.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to verify protected workspace")
+		return
+	}
+	if protected {
+		writeError(w, http.StatusConflict, "the public gateway workspace cannot be deleted")
+		return
+	}
 
 	// Invalidate membership cache for all workspace members before deletion.
 	// After CASCADE deletes the member rows, cache entries become harmless
@@ -787,6 +823,17 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("delete workspace chat pins failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
 		return
+	}
+
+	for _, affectedUserID := range affectedUserIDs {
+		if _, err := qtx.ReplaceDefaultWorkspaceOnMembershipRemoval(r.Context(), db.ReplaceDefaultWorkspaceOnMembershipRemovalParams{
+			UserID:             parseUUID(affectedUserID),
+			RemovedWorkspaceID: requester.WorkspaceID,
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("replace default workspace during delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID, "user_id", affectedUserID)...)
+			writeError(w, http.StatusInternalServerError, "failed to update member default workspaces")
+			return
+		}
 	}
 
 	// At this point workspaceMember has resolved → workspaceID is a valid UUID

@@ -150,6 +150,12 @@ export type {
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
+  RedeemLarkAccountBindingTokenResponse,
+  LarkAccountBinding,
+  FeishuWorkspaceSetting,
+  UpdateFeishuWorkspaceSetting,
+  InstanceBootstrapState,
+  DefaultWorkspaceResponse,
 } from "./lark";
 export type {
   ComposioToolkit,

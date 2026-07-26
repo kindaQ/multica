@@ -37,7 +37,11 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { larkInstallationsOptions, larkKeys } from "@multica/core/lark";
+import {
+  instanceBootstrapOptions,
+  larkInstallationsOptions,
+  larkKeys,
+} from "@multica/core/lark";
 import { api, ApiError } from "@multica/core/api";
 import type { LarkInstallation, LarkInstallStatusResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -86,6 +90,7 @@ export function LarkTab() {
   // than send users into a broken flow. Already-installed bots still
   // appear in the listing below and remain manageable.
   const installSupported = data?.install_supported === true;
+  const { data: instanceState } = useQuery(instanceBootstrapOptions());
 
   const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -107,6 +112,13 @@ export function LarkTab() {
 
   return (
     <div className="space-y-8">
+      {instanceState?.is_super_admin ? (
+        <PublicGatewayBotCard
+          status={instanceState.status}
+          installationId={instanceState.public_channel_installation_id}
+        />
+      ) : null}
+
       <section className="space-y-1">
         <p className="text-sm text-muted-foreground">
           {t(($) => $.lark.page_description)}
@@ -207,6 +219,132 @@ export function LarkTab() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function PublicGatewayBotCard({
+  status,
+  installationId,
+}: {
+  status: string;
+  installationId: string | null;
+}) {
+  const { t } = useT("settings");
+  const queryClient = useQueryClient();
+  const [starting, setStarting] = useState(false);
+  const [session, setSession] = useState<{
+    id: string;
+    url: string;
+    intervalMs: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await api.getPublicLarkInstallStatus(session.id);
+        if (cancelled) return;
+        if (result.status === "success") {
+          window.clearInterval(timer);
+          setSession(null);
+          await queryClient.invalidateQueries({ queryKey: larkKeys.instance() });
+          toast.success(t(($) => $.lark.public_gateway.connected_toast));
+        } else if (result.status === "error") {
+          window.clearInterval(timer);
+          setSession(null);
+          toast.error(result.error_message || t(($) => $.lark.public_gateway.connect_failed));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          window.clearInterval(timer);
+          setSession(null);
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : t(($) => $.lark.public_gateway.status_failed),
+          );
+        }
+      }
+    }, session.intervalMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [queryClient, session, t]);
+
+  const start = async () => {
+    if (starting) return;
+    setStarting(true);
+    try {
+      if (status === "uninitialized") {
+        await api.bootstrapInstance();
+        await queryClient.invalidateQueries({ queryKey: larkKeys.instance() });
+      }
+      const result = await api.beginPublicLarkInstall("feishu");
+      setSession({
+        id: result.session_id,
+        url: result.qr_code_url,
+        intervalMs: Math.max(result.poll_interval_seconds, 1) * 1000,
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.lark.public_gateway.start_failed),
+      );
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  return (
+    <>
+      <Card>
+        <CardContent className="flex items-center justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">{t(($) => $.lark.public_gateway.title)}</p>
+            <p className="text-xs text-muted-foreground">
+              {t(($) => $.lark.public_gateway.description)}
+            </p>
+          </div>
+          {status === "ready" && installationId ? (
+            <span className="text-xs font-medium text-emerald-600">
+              {t(($) => $.lark.public_gateway.connected)}
+            </span>
+          ) : (
+            <Button size="sm" onClick={() => void start()} disabled={starting}>
+              {starting
+                ? t(($) => $.lark.public_gateway.starting)
+                : status === "uninitialized"
+                  ? t(($) => $.lark.public_gateway.initialize)
+                  : t(($) => $.lark.public_gateway.connect)}
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={!!session} onOpenChange={(open) => !open && setSession(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.lark.public_gateway.dialog_title)}</DialogTitle>
+            <DialogDescription>
+              {t(($) => $.lark.public_gateway.dialog_description)}
+            </DialogDescription>
+          </DialogHeader>
+          {session ? (
+            <div className="flex justify-center rounded-lg bg-white p-6">
+              <QRCode value={session.url} size={220} />
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSession(null)}>
+              {t(($) => $.lark.public_gateway.cancel)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

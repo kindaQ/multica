@@ -105,6 +105,22 @@ type ReplyCtx struct {
 	RootID string
 }
 
+// RouteTarget is an internal, trusted routing override produced by an
+// instance-level channel gateway after it resolves the sender's account and
+// workspace preferences. Adapters may consume it in their resolver set; it is
+// never populated from a platform payload or client-supplied JSON.
+//
+// String UUIDs keep the channel foundation independent of pgx types. The
+// platform resolver parses and validates them before constructing its engine
+// context.
+type RouteTarget struct {
+	WorkspaceID    string
+	AgentID        string
+	UserID         string
+	BindingKey     string
+	OutboundOpenID string
+}
+
 // InboundMessage is the single normalized shape the core consumes. Every
 // adapter translates its platform's raw payload into this struct; the
 // core's router, dedup, identity check, and persistence read ONLY these
@@ -148,6 +164,11 @@ type InboundMessage struct {
 	// affordance). The adapter normalizes its platform-specific trigger
 	// into this boolean; the core only reads the flag.
 	ForceFresh bool
+
+	// RouteTarget is nil for ordinary per-workspace installations. A public
+	// gateway sets it only after server-side account, membership, workspace and
+	// agent validation.
+	RouteTarget *RouteTarget
 
 	// Raw is the untouched platform payload. Adapters stash platform-
 	// specific fields here (Lark raw msg_type / parent_id / root_id /

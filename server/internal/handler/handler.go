@@ -182,6 +182,10 @@ type Handler struct {
 	// zero key. Wired in cmd/server/router.go after handler.New.
 	LarkInstallations *lark.InstallationService
 	LarkBindingTokens *lark.BindingTokenService
+	// LarkAccountBindings maps users of the instance-level public Feishu bot to
+	// Multica accounts. It is deliberately separate from the legacy
+	// workspace-scoped binding service above.
+	LarkAccountBindings *lark.AccountBindingService
 	// LarkRegistration owns the device-flow install lifecycle: begin
 	// a registration session against accounts.feishu.cn, poll, and
 	// on success write lark_installation + the installer's
@@ -197,6 +201,9 @@ type Handler struct {
 	// UI consults IsConfigured() to decide whether to surface install
 	// entry points.
 	LarkAPIClient lark.APIClient
+	// LarkNotifications owns the durable public-bot notification outbox worker.
+	// Nil when the public Feishu transport is not configured.
+	LarkNotifications *lark.NotificationService
 	// Composio integration (MUL-3720). Nil when COMPOSIO_API_KEY is unset;
 	// the composio HTTP handlers return 503 in that case. Wired in
 	// cmd/server/router.go after handler.New.

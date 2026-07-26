@@ -78,14 +78,29 @@ func (r *feishuInstallationResolver) ResolveInstallation(ctx context.Context, ms
 		}
 		return engine.ResolvedInstallation{}, err
 	}
-	return engine.ResolvedInstallation{
+	resolved := engine.ResolvedInstallation{
 		ID:              inst.ID,
 		WorkspaceID:     inst.WorkspaceID,
 		AgentID:         inst.AgentID,
 		InstallerUserID: inst.InstallerUserID,
 		Active:          InstallationStatus(inst.Status) == InstallationActive,
 		Platform:        inst,
-	}, nil
+	}
+	if msg.RouteTarget != nil {
+		if err := resolved.WorkspaceID.Scan(msg.RouteTarget.WorkspaceID); err != nil {
+			return engine.ResolvedInstallation{}, fmt.Errorf("invalid gateway workspace route: %w", err)
+		}
+		if err := resolved.AgentID.Scan(msg.RouteTarget.AgentID); err != nil {
+			return engine.ResolvedInstallation{}, fmt.Errorf("invalid gateway agent route: %w", err)
+		}
+		// Group sessions are normally created by the installation owner. A
+		// public gateway serves many users/workspaces, so the routed user is the
+		// stable creator for both p2p and group sessions.
+		if err := resolved.InstallerUserID.Scan(msg.RouteTarget.UserID); err != nil {
+			return engine.ResolvedInstallation{}, fmt.Errorf("invalid gateway user route: %w", err)
+		}
+	}
+	return resolved, nil
 }
 
 // ---- identity ----
@@ -93,6 +108,20 @@ func (r *feishuInstallationResolver) ResolveInstallation(ctx context.Context, ms
 type feishuIdentityResolver struct{ store *ChannelStore }
 
 func (r *feishuIdentityResolver) ResolveSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
+	if msg.RouteTarget != nil {
+		var userID pgtype.UUID
+		if err := userID.Scan(msg.RouteTarget.UserID); err != nil {
+			return engine.ResolvedIdentity{}, err
+		}
+		isMember, err := r.store.IsWorkspaceMember(ctx, inst.WorkspaceID, userID)
+		if err != nil {
+			return engine.ResolvedIdentity{}, err
+		}
+		if !isMember {
+			return engine.ResolvedIdentity{}, engine.ErrSenderNotMember
+		}
+		return engine.ResolvedIdentity{UserID: userID}, nil
+	}
 	binding, err := r.store.GetLarkUserBindingByOpenID(ctx, GetUserBindingByOpenIDParams{
 		InstallationID: inst.ID,
 		ChannelUserID:  msg.Source.SenderID,
@@ -166,6 +195,7 @@ type feishuSessionBinder struct{ session chatSession }
 // chat id lives here so the outbound path can post back.
 type larkBindingConfig struct {
 	ChatID string `json:"chat_id"`
+	OpenID string `json:"open_id,omitempty"`
 }
 
 // larkSessionRouting derives the session-isolation key (stored as
@@ -187,6 +217,14 @@ func larkSessionRouting(msg channel.InboundMessage) (bindingKey string, config [
 
 func (r *feishuSessionBinder) EnsureSession(ctx context.Context, p engine.EnsureSessionParams) (pgtype.UUID, error) {
 	bindingKey, config := larkSessionRouting(p.Message)
+	if p.Message.RouteTarget != nil && p.Message.RouteTarget.BindingKey != "" {
+		bindingKey = p.Message.RouteTarget.BindingKey
+		if p.Message.RouteTarget.OutboundOpenID != "" {
+			config, _ = json.Marshal(larkBindingConfig{OpenID: p.Message.RouteTarget.OutboundOpenID})
+		} else {
+			config, _ = json.Marshal(larkBindingConfig{ChatID: p.Message.Source.ChatID})
+		}
+	}
 	return r.session.EnsureSession(ctx, engine.EnsureSessionInput{
 		WorkspaceID:    p.Installation.WorkspaceID,
 		AgentID:        p.Installation.AgentID,

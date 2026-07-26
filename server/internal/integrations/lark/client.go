@@ -251,7 +251,11 @@ type PatchCardParams struct {
 type SendTextParams struct {
 	InstallationID InstallationCredentials
 	ChatID         ChatID
-	Text           string
+	// OpenID switches a fresh-send request to receive_id_type=open_id. It is
+	// used by the public gateway for private notifications and dispatched
+	// conversations that did not originate in a private chat.
+	OpenID OpenID
+	Text   string
 	// ReplyTarget threads the text reply back into a Lark topic; see
 	// ReplyTarget. Empty keeps the chat-level send.
 	ReplyTarget ReplyTarget
@@ -264,6 +268,7 @@ type SendTextParams struct {
 type SendMarkdownCardParams struct {
 	InstallationID InstallationCredentials
 	ChatID         ChatID
+	OpenID         OpenID
 	// Markdown is the body. Lark schema-2.0 markdown supports GFM-ish:
 	// **bold**, *italic*, `inline code`, fenced code blocks, headings,
 	// ordered + unordered lists, links, tables, blockquotes, separators.

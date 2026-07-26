@@ -256,7 +256,22 @@
     "toast_avatar_updated": "アバターを更新しました",
     "toast_avatar_failed": "アバターをアップロードできませんでした",
     "toast_profile_updated": "プロフィールを更新しました",
-    "toast_profile_failed": "プロフィールを更新できませんでした"
+    "toast_profile_failed": "プロフィールを更新できませんでした",
+    "lark_gateway": {
+      "title": "公開 Feishu ボット",
+      "description": "Feishu のダイレクトメッセージを受け取る既定のワークスペースを選択し、アカウント連携を管理します。",
+      "default_workspace": "既定のワークスペース",
+      "default_workspace_description": "公開ボットが Feishu メッセージを受け取ると、このワークスペースの既定エージェントに転送します。",
+      "default_workspace_updated": "既定のワークスペースを更新しました",
+      "default_workspace_failed": "既定のワークスペースを更新できませんでした",
+      "account_binding": "Feishu アカウント連携",
+      "bound_description": "公開 Feishu ボットと連携済みです。ワークスペース通知をダイレクトメッセージで受け取れます。",
+      "unbound_description": "未連携です。Feishu で公開ボットにダイレクトメッセージを送り、返信された連携リンクを開いてください。",
+      "unbound_success": "Feishu アカウントの連携を解除しました",
+      "unbound_failed": "連携を解除できませんでした",
+      "unbind": "連携を解除",
+      "waiting_for_binding": "Feishu 連携待ち"
+    }
   },
   "notifications": {
     "title": "インボックス通知",
@@ -297,6 +312,20 @@
       "granted": "このブラウザは通知バナーを表示できます。",
       "denied": "ブラウザによってブロックされています。ブラウザの設定でこのサイトの通知を許可してください。",
       "enabled_badge": "有効"
+    },
+    "feishu": {
+      "title": "Feishu ダイレクトメッセージ通知とルーティング",
+      "description": "公開ボットはメッセージを既定エージェントへ転送します。issue が完了またはブロック状態になると、同じボットが選択したメンバーへ通知します。",
+      "default_agent": "既定のメッセージエージェント",
+      "default_agent_description": "公開 Feishu ボットからこのワークスペースへ転送されたメッセージを処理します。",
+      "recipient": "Feishu 通知の受信者",
+      "recipient_bound_description": "各ワークスペースで受信者は 1 人のみ選択でき、そのメンバーは公開ボットと連携済みである必要があります。",
+      "recipient_unbound_description": "公開 Feishu ボットとまだ連携していません。受信者は先にボットへダイレクトメッセージを送り、連携を完了する必要があります。",
+      "issue_status": "Issue ステータス通知",
+      "issue_status_description": "issue が完了またはブロック状態になったとき、Feishu のダイレクトメッセージを送信します。",
+      "not_configured": "未設定",
+      "saved": "Feishu 設定を保存しました",
+      "save_failed": "Feishu 設定を保存できませんでした"
     }
   },
   "tokens": {
@@ -553,7 +582,22 @@
     "install_error_installer_bind": "ボットは設置されましたが、Lark の身元情報を連携できませんでした。もう一度お試しいただくか、サポートにお問い合わせください。",
     "install_error_session_lost": "設置セッションが期限切れまたは失われました。もう一度スキャンしてやり直してください。",
     "install_error_forbidden": "このワークスペースに Lark ボットを設置する権限がなくなりました。ワークスペース管理者にお問い合わせください。",
-    "install_error_generic": "設置に失敗しました。もう一度お試しください。"
+    "install_error_generic": "設置に失敗しました。もう一度お試しください。",
+    "public_gateway": {
+      "title": "公開 Feishu ボット",
+      "description": "ユーザーのメッセージを一元的に受信し、ワークスペース通知をダイレクトメッセージで送信します。",
+      "connected": "接続済み",
+      "starting": "起動中…",
+      "initialize": "初期化して接続",
+      "connect": "ボットを接続",
+      "dialog_title": "公開 Feishu ボットを接続",
+      "dialog_description": "スーパー管理者の Feishu アカウントで QR コードを読み取り、ボットを作成します。",
+      "cancel": "キャンセル",
+      "connected_toast": "公開 Feishu ボットを接続しました",
+      "connect_failed": "公開 Feishu ボットを接続できませんでした",
+      "status_failed": "インストール状態を確認できませんでした",
+      "start_failed": "公開ボットのインストールを開始できませんでした"
+    }
   },
   "composio": {
     "section_title": "Composio",

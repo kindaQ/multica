@@ -142,6 +142,12 @@ import type {
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
+  RedeemLarkAccountBindingTokenResponse,
+  LarkAccountBinding,
+  FeishuWorkspaceSetting,
+  UpdateFeishuWorkspaceSetting,
+  InstanceBootstrapState,
+  DefaultWorkspaceResponse,
   ComposioToolkit,
   ComposioConnection,
   ComposioConnectInitResponse,
@@ -2882,6 +2888,62 @@ export class ApiClient {
     return this.fetch(`/api/lark/binding/redeem`, {
       method: "POST",
       body: JSON.stringify({ token }),
+    });
+  }
+
+  async redeemLarkAccountBindingToken(token: string): Promise<RedeemLarkAccountBindingTokenResponse> {
+    return this.fetch(`/api/lark/account-binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  async getLarkAccountBinding(): Promise<LarkAccountBinding> {
+    return this.fetch(`/api/me/channel-bindings/feishu`);
+  }
+
+  async deleteLarkAccountBinding(): Promise<void> {
+    await this.fetch(`/api/me/channel-bindings/feishu`, { method: "DELETE" });
+  }
+
+  async getFeishuWorkspaceSetting(workspaceId: string): Promise<FeishuWorkspaceSetting> {
+    return this.fetch(`/api/workspaces/${workspaceId}/channel-settings/feishu`);
+  }
+
+  async updateFeishuWorkspaceSetting(
+    workspaceId: string,
+    setting: UpdateFeishuWorkspaceSetting,
+  ): Promise<FeishuWorkspaceSetting> {
+    return this.fetch(`/api/workspaces/${workspaceId}/channel-settings/feishu`, {
+      method: "PATCH",
+      body: JSON.stringify(setting),
+    });
+  }
+
+  async getInstanceBootstrap(): Promise<InstanceBootstrapState> {
+    return this.fetch(`/api/instance/bootstrap`);
+  }
+
+  async bootstrapInstance(): Promise<InstanceBootstrapState> {
+    return this.fetch(`/api/instance/bootstrap`, { method: "POST", body: "{}" });
+  }
+
+  async beginPublicLarkInstall(region: "feishu" | "lark"): Promise<BeginLarkInstallResponse> {
+    return this.fetch(`/api/instance/lark/install/begin?region=${region}`, { method: "POST" });
+  }
+
+  async getPublicLarkInstallStatus(sessionId: string): Promise<LarkInstallStatusResponse> {
+    return this.fetch(`/api/instance/lark/install/${sessionId}/status`);
+  }
+
+  async getDefaultWorkspace(): Promise<DefaultWorkspaceResponse> {
+    return this.fetch(`/api/me/default-workspace`);
+  }
+
+  async updateDefaultWorkspace(workspaceId: string): Promise<DefaultWorkspaceResponse> {
+    return this.fetch(`/api/me/default-workspace`, {
+      method: "PATCH",
+      body: JSON.stringify({ workspace_id: workspaceId }),
     });
   }
 

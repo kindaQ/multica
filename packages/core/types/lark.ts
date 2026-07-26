@@ -74,3 +74,46 @@ export interface RedeemLarkBindingTokenResponse {
   installation_id: string;
   lark_open_id: string;
 }
+
+export interface RedeemLarkAccountBindingTokenResponse {
+  installation_id: string;
+  lark_open_id: string;
+  default_workspace_id: string;
+}
+
+export interface LarkAccountBinding {
+  bound: boolean;
+  installation_id: string | null;
+  lark_open_id: string | null;
+  bound_at: string | null;
+}
+
+export interface FeishuWorkspaceSetting {
+  workspace_id: string;
+  channel_type: "feishu";
+  default_agent_id: string | null;
+  notification_recipient_user_id: string | null;
+  notification_enabled: boolean;
+  notification_events: string[];
+}
+
+export interface UpdateFeishuWorkspaceSetting {
+  default_agent_id?: string | null;
+  notification_recipient_user_id?: string | null;
+  notification_enabled?: boolean;
+  notification_events?: string[];
+}
+
+export interface InstanceBootstrapState {
+  status: "uninitialized" | "setup" | "ready" | "paused" | string;
+  is_super_admin: boolean;
+  super_admin_user_id: string;
+  public_workspace_id: string | null;
+  public_agent_id: string | null;
+  public_channel_installation_id: string | null;
+  initialized_at: string | null;
+}
+
+export interface DefaultWorkspaceResponse {
+  workspace_id: string | null;
+}

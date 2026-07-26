@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -135,6 +137,22 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 	if err := qtx.DeleteAgentInvocationTargetsByMember(ctx, db.DeleteAgentInvocationTargetsByMemberParams{
 		WorkspaceID: workspaceID,
 		TargetID:    userID,
+	}); err != nil {
+		return empty, err
+	}
+
+	// A user's Feishu routing target must never point at a workspace they no
+	// longer belong to. Choose the oldest remaining membership deterministically
+	// while the leaving membership is still visible, explicitly excluding it.
+	if _, err := qtx.ReplaceDefaultWorkspaceOnMembershipRemoval(ctx, db.ReplaceDefaultWorkspaceOnMembershipRemovalParams{
+		UserID:             userID,
+		RemovedWorkspaceID: workspaceID,
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return empty, err
+	}
+	if _, err := qtx.ClearWorkspaceChannelRecipientForMember(ctx, db.ClearWorkspaceChannelRecipientForMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
 	}); err != nil {
 		return empty, err
 	}

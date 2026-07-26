@@ -16,6 +16,7 @@ const mockAuthState = vi.hoisted(() => ({
 
 const mockNavigatePush = vi.hoisted(() => vi.fn());
 const mockRedeemToken = vi.hoisted(() => vi.fn());
+const mockRedeemAccountToken = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/auth", () => {
   const useAuthStore = Object.assign(
@@ -31,7 +32,10 @@ vi.mock("../navigation", () => ({
 }));
 
 vi.mock("@multica/core/api", () => ({
-  api: { redeemLarkBindingToken: mockRedeemToken },
+  api: {
+    redeemLarkBindingToken: mockRedeemToken,
+    redeemLarkAccountBindingToken: mockRedeemAccountToken,
+  },
 }));
 
 import { LarkBindPage } from "./bind-page";
@@ -54,6 +58,7 @@ describe("LarkBindPage", () => {
     mockAuthState.isLoading = false;
     mockNavigatePush.mockReset();
     mockRedeemToken.mockReset();
+    mockRedeemAccountToken.mockReset();
   });
 
   it("shows redeeming text while auth is still loading (not needs-auth)", () => {
@@ -97,6 +102,21 @@ describe("LarkBindPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/you're bound/i)).toBeInTheDocument();
     });
+  });
+
+  it("uses account binding redemption for the public bot link", async () => {
+    mockAuthState.user = { id: "u1", email: "u@example.com" };
+    mockRedeemAccountToken.mockResolvedValue({
+      default_workspace_id: "ws1",
+      installation_id: "inst-public",
+    });
+    render(<LarkBindPage token="public-token" mode="account" />, {
+      wrapper: I18nWrapper,
+    });
+    await waitFor(() => {
+      expect(mockRedeemAccountToken).toHaveBeenCalledWith("public-token");
+    });
+    expect(mockRedeemToken).not.toHaveBeenCalled();
   });
 
   it("sign-in button navigates with ?next= parameter (not ?redirect=)", () => {

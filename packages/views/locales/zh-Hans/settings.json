@@ -263,7 +263,22 @@
     "toast_avatar_updated": "头像已更新",
     "toast_avatar_failed": "上传头像失败",
     "toast_profile_updated": "资料已更新",
-    "toast_profile_failed": "更新资料失败"
+    "toast_profile_failed": "更新资料失败",
+    "lark_gateway": {
+      "title": "公共飞书机器人",
+      "description": "选择飞书私聊消息默认进入的 workspace，并管理当前飞书账号绑定。",
+      "default_workspace": "默认 workspace",
+      "default_workspace_description": "公共机器人收到你的飞书消息时，会从这里查找默认处理智能体。",
+      "default_workspace_updated": "默认 workspace 已更新",
+      "default_workspace_failed": "更新默认 workspace 失败",
+      "account_binding": "飞书账号绑定",
+      "bound_description": "已绑定公共飞书机器人，workspace 通知可以发送到你的私聊。",
+      "unbound_description": "未绑定。请在飞书中私聊公共机器人并打开机器人返回的绑定链接。",
+      "unbound_success": "飞书账号已解绑",
+      "unbound_failed": "解绑失败",
+      "unbind": "解绑",
+      "waiting_for_binding": "等待飞书绑定"
+    }
   },
   "notifications": {
     "title": "收件箱通知",
@@ -304,6 +319,20 @@
       "granted": "当前浏览器可以弹出通知横幅。",
       "denied": "已被浏览器拦截。请在浏览器设置中为本站点开启通知权限。",
       "enabled_badge": "已启用"
+    },
+    "feishu": {
+      "title": "飞书私聊通知与消息路由",
+      "description": "公共机器人收到你的消息后会转到默认智能体；issue 完成或阻塞时，通过同一机器人私聊通知指定成员。",
+      "default_agent": "默认消息智能体",
+      "default_agent_description": "处理从公共飞书机器人路由到当前 workspace 的消息。",
+      "recipient": "飞书通知接收人",
+      "recipient_bound_description": "每个 workspace 只能选择一位接收人；该成员必须已绑定公共机器人。",
+      "recipient_unbound_description": "你尚未绑定公共飞书机器人；接收人必须先在飞书私聊机器人完成绑定。",
+      "issue_status": "Issue 状态通知",
+      "issue_status_description": "issue 进入完成或阻塞状态时发送飞书私聊。",
+      "not_configured": "未配置",
+      "saved": "飞书设置已保存",
+      "save_failed": "保存飞书设置失败"
     }
   },
   "tokens": {
@@ -560,7 +589,22 @@
     "install_error_installer_bind": "已安装 Bot，但未能绑定你的飞书身份。请重试或联系管理员。",
     "install_error_session_lost": "安装会话已失效或丢失，请重新扫码。",
     "install_error_forbidden": "你已没有在此工作区安装飞书 Bot 的权限，请联系工作区管理员。",
-    "install_error_generic": "安装失败，请重试。"
+    "install_error_generic": "安装失败，请重试。",
+    "public_gateway": {
+      "title": "公共飞书机器人",
+      "description": "统一接收用户消息，并通过私聊发送 workspace 通知。",
+      "connected": "已连接",
+      "starting": "正在启动…",
+      "initialize": "初始化并连接",
+      "connect": "连接机器人",
+      "dialog_title": "连接公共飞书机器人",
+      "dialog_description": "使用超级管理员的飞书扫描二维码完成机器人创建。",
+      "cancel": "取消",
+      "connected_toast": "公共飞书机器人已连接",
+      "connect_failed": "连接公共飞书机器人失败",
+      "status_failed": "检查安装状态失败",
+      "start_failed": "启动公共机器人安装失败"
+    }
   },
   "composio": {
     "section_title": "Composio",

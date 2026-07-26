@@ -59,6 +59,8 @@ export interface User {
   profile_description: string;
   /** Pinned IANA tz; null means "use browser-detected tz at render time". */
   timezone: string | null;
+  /** Workspace selected for public-channel inbound routing. */
+  default_workspace_id?: string | null;
   created_at: string;
   updated_at: string;
 }

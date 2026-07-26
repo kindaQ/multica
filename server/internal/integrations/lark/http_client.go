@@ -237,7 +237,7 @@ func (c *httpAPIClient) invalidateToken(appID string) {
 // goes to the chat-level send endpoint keyed by receive_id=chat_id, the
 // historical behavior. Body is map[string]any (not map[string]string)
 // because reply_in_thread is a bool.
-func outboundMessageRequest(chatID ChatID, msgType, content string, target ReplyTarget) (string, map[string]any) {
+func outboundMessageRequest(chatID ChatID, openID OpenID, msgType, content string, target ReplyTarget) (string, map[string]any) {
 	if target.IsSet() {
 		return "/open-apis/im/v1/messages/" + url.PathEscape(target.MessageID) + "/reply", map[string]any{
 			"msg_type":        msgType,
@@ -246,9 +246,14 @@ func outboundMessageRequest(chatID ChatID, msgType, content string, target Reply
 		}
 	}
 	q := url.Values{}
+	receiveID := string(chatID)
 	q.Set("receive_id_type", "chat_id")
+	if openID != "" {
+		receiveID = string(openID)
+		q.Set("receive_id_type", "open_id")
+	}
 	return "/open-apis/im/v1/messages?" + q.Encode(), map[string]any{
-		"receive_id": string(chatID),
+		"receive_id": receiveID,
 		"msg_type":   msgType,
 		"content":    content,
 	}
@@ -268,7 +273,7 @@ func (c *httpAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParam
 	if err != nil {
 		return "", err
 	}
-	path, body := outboundMessageRequest(p.ChatID, "interactive", p.CardJSON, p.ReplyTarget)
+	path, body := outboundMessageRequest(p.ChatID, "", "interactive", p.CardJSON, p.ReplyTarget)
 	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
@@ -295,8 +300,8 @@ func (c *httpAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParam
 // content envelope Lark expects is a JSON-encoded `{"text": "..."}`
 // blob; we encode it here so callers pass raw text.
 func (c *httpAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
-	if p.ChatID == "" {
-		return "", errors.New("lark http client: missing chat_id")
+	if p.ChatID == "" && p.OpenID == "" {
+		return "", errors.New("lark http client: missing chat_id or open_id")
 	}
 	if p.Text == "" {
 		return "", errors.New("lark http client: missing text")
@@ -312,7 +317,7 @@ func (c *httpAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (
 	if err != nil {
 		return "", fmt.Errorf("lark http client: encode text content: %w", err)
 	}
-	path, body := outboundMessageRequest(p.ChatID, "text", string(contentBytes), p.ReplyTarget)
+	path, body := outboundMessageRequest(p.ChatID, p.OpenID, "text", string(contentBytes), p.ReplyTarget)
 	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
@@ -348,8 +353,8 @@ func (c *httpAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (
 // highlighting), no tables, no heading sizes. Schema-2.0's
 // `markdown` tag is closer to GFM.
 func (c *httpAPIClient) SendMarkdownCard(ctx context.Context, p SendMarkdownCardParams) (string, error) {
-	if p.ChatID == "" {
-		return "", errors.New("lark http client: missing chat_id")
+	if p.ChatID == "" && p.OpenID == "" {
+		return "", errors.New("lark http client: missing chat_id or open_id")
 	}
 	if p.Markdown == "" {
 		return "", errors.New("lark http client: missing markdown body")
@@ -375,7 +380,7 @@ func (c *httpAPIClient) SendMarkdownCard(ctx context.Context, p SendMarkdownCard
 	if err != nil {
 		return "", fmt.Errorf("lark http client: encode markdown card: %w", err)
 	}
-	path, body := outboundMessageRequest(p.ChatID, "interactive", string(cardBytes), p.ReplyTarget)
+	path, body := outboundMessageRequest(p.ChatID, p.OpenID, "interactive", string(cardBytes), p.ReplyTarget)
 	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`

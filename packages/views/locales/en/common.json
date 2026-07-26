@@ -51,7 +51,9 @@
     "error_expired": "This binding link is invalid or expired (links are valid for 15 minutes). Ask the Bot to send a new one.",
     "error_already_bound": "This Lark account is already bound to a different Multica user. Account transfers must go through an explicit unbind first.",
     "error_not_member": "You're signed in to a Multica account that isn't a member of this workspace.",
-    "error_unknown": "Something went wrong. Try again, and if the problem persists, contact the workspace admin."
+    "error_unknown": "Something went wrong. Try again, and if the problem persists, contact the workspace admin.",
+    "needs_workspace_description": "Create a workspace first. Feishu account binding will continue after it is created.",
+    "create_workspace": "Create workspace"
   },
   "slack_bind": {
     "page_title": "Link your Slack account",
