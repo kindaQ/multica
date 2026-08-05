@@ -28,6 +28,7 @@ const (
 	OutcomeIngested      Outcome = "ingested"
 	OutcomeAgentOffline  Outcome = "agent_offline"
 	OutcomeAgentArchived Outcome = "agent_archived"
+	OutcomeControl       Outcome = "control"
 )
 
 // DropReason enumerates the drop-audit categories. Values match the legacy
@@ -62,6 +63,9 @@ type Result struct {
 	// because the shared duplicate guard found the active IssueID above.
 	// Repliers render this as a business conflict, never as an internal error.
 	IssueDuplicate bool
+	// Message is an immediate user-facing control or validation response.
+	// It is never appended to an agent chat or issue comment.
+	Message string
 	// runScheduled reports whether this ingest scheduled a normal chat run.
 	// It is Router-internal state: repliers must continue to use Outcome.
 	runScheduled bool
@@ -75,6 +79,8 @@ type ResolvedInstallation struct {
 	ID              pgtype.UUID
 	WorkspaceID     pgtype.UUID
 	AgentID         pgtype.UUID
+	TargetType      string
+	TargetID        pgtype.UUID
 	InstallerUserID pgtype.UUID
 	Active          bool
 	Platform        any
@@ -83,6 +89,46 @@ type ResolvedInstallation struct {
 // ResolvedIdentity is the sender mapped to a Multica user.
 type ResolvedIdentity struct {
 	UserID pgtype.UUID
+}
+
+// RouteResolution is the target chosen for one inbound message. Handled marks
+// a control command or validation response that must be acknowledged without
+// creating a chat message or agent task.
+type RouteResolution struct {
+	Installation   ResolvedInstallation
+	IssueID        pgtype.UUID
+	ChatSessionID  pgtype.UUID
+	RouteContextID pgtype.UUID
+	Handled        bool
+	Ignored        bool
+	Message        string
+}
+
+// RouteResolver applies reply routing and one-shot route context after the
+// sender has been authenticated but before any chat session is created.
+type RouteResolver interface {
+	ResolveRoute(ctx context.Context, inst ResolvedInstallation, sender ResolvedIdentity, msg channel.InboundMessage) (RouteResolution, error)
+}
+
+type IssueIngressParams struct {
+	Installation   ResolvedInstallation
+	Sender         ResolvedIdentity
+	Message        channel.InboundMessage
+	IssueID        pgtype.UUID
+	RouteContextID pgtype.UUID
+	ClaimToken     pgtype.UUID
+}
+
+type IssueIngressResult struct {
+	CommentID   pgtype.UUID
+	TaskID      pgtype.UUID
+	DedupMarked bool
+}
+
+// IssueIngester persists a member comment, one explicit agent task, delivery
+// intent, dedup finalization, and route consumption atomically.
+type IssueIngester interface {
+	IngestIssueMessage(ctx context.Context, p IssueIngressParams) (IssueIngressResult, error)
 }
 
 // EnsureSessionParams carries the inputs for SessionBinder.EnsureSession.
@@ -106,6 +152,7 @@ type AppendParams struct {
 	InstallationID      pgtype.UUID
 	Message             channel.InboundMessage
 	ClaimToken          pgtype.UUID
+	RouteContextID      pgtype.UUID
 	MediaPendingSeconds float64
 }
 
@@ -299,6 +346,8 @@ type TypingNotifier interface {
 type ResolverSet struct {
 	Installation InstallationResolver
 	Identity     IdentityResolver
+	Route        RouteResolver
+	Issue        IssueIngester
 	Dedup        Deduper
 	Session      SessionBinder
 	Media        MediaResolver

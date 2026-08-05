@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -529,6 +530,20 @@ func (h *Handler) DeleteSquad(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive squad")
 		return
+	}
+	// A squad installation cannot route after the squad is archived. Revoke it
+	// explicitly (there are intentionally no database cascades), which also
+	// clears pending one-shot routes and undelivered messages.
+	if h.LarkInstallations != nil {
+		if installations, listErr := h.LarkInstallations.ListByWorkspace(r.Context(), squad.WorkspaceID); listErr == nil {
+			for _, installation := range installations {
+				if installation.TargetType == string(lark.InstallationTargetSquad) && installation.TargetID == squad.ID && installation.Status == string(lark.InstallationActive) {
+					if revokeErr := h.LarkInstallations.Revoke(r.Context(), installation.ID); revokeErr != nil {
+						slog.Warn("revoke archived squad lark installation failed", "squad_id", uuidToString(squad.ID), "installation_id", uuidToString(installation.ID), "error", revokeErr)
+					}
+				}
+			}
+		}
 	}
 
 	h.publish(protocol.EventSquadDeleted, workspaceID, "member", userID, map[string]any{

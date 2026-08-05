@@ -7,7 +7,11 @@
 export interface LarkInstallation {
   id: string;
   workspace_id: string;
-  agent_id: string;
+  agent_id?: string;
+  target_type?: "agent" | "squad" | string;
+  target_id?: string;
+  target_name?: string;
+  current_leader_id?: string;
   app_id: string;
   tenant_key?: string | null;
   bot_open_id: string;

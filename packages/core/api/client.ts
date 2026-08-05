@@ -3279,8 +3279,9 @@ export class ApiClient {
 
   async beginLarkInstall(
     workspaceId: string,
-    agentId: string,
+    targetId: string,
     region: "feishu" | "lark",
+    targetType: "agent" | "squad" = "agent",
   ): Promise<BeginLarkInstallResponse> {
     // The user picks the cloud explicitly in the UI ("Bind to Feishu"
     // vs "Bind to Lark"), and the backend POSTs the device-flow `begin`
@@ -3290,7 +3291,7 @@ export class ApiClient {
     // server-side (RegionOrDefault) — we surface region as a required
     // arg here so every call site is forced to make a deliberate
     // choice rather than silently defaulting to mainland.
-    const search = new URLSearchParams({ agent_id: agentId, region });
+    const search = new URLSearchParams({ target_type: targetType, target_id: targetId, region });
     return this.fetch(`/api/workspaces/${workspaceId}/lark/install/begin?${search.toString()}`, {
       method: "POST",
     });

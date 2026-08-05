@@ -294,6 +294,51 @@ type ChannelChatSessionBinding struct {
 	LastThreadID   pgtype.Text        `json:"last_thread_id"`
 	Config         []byte             `json:"config"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+}
+
+type ChannelDelivery struct {
+	ID                       pgtype.UUID        `json:"id"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	InstallationID           pgtype.UUID        `json:"installation_id"`
+	ChannelType              string             `json:"channel_type"`
+	Kind                     string             `json:"kind"`
+	RequestKey               pgtype.Text        `json:"request_key"`
+	RouteType                string             `json:"route_type"`
+	ReplyPolicy              string             `json:"reply_policy"`
+	TaskID                   pgtype.UUID        `json:"task_id"`
+	ChatSessionID            pgtype.UUID        `json:"chat_session_id"`
+	IssueID                  pgtype.UUID        `json:"issue_id"`
+	AgentID                  pgtype.UUID        `json:"agent_id"`
+	SourceUserID             pgtype.UUID        `json:"source_user_id"`
+	DestinationChannelUserID pgtype.Text        `json:"destination_channel_user_id"`
+	DestinationChatID        pgtype.Text        `json:"destination_chat_id"`
+	DestinationThreadID      pgtype.Text        `json:"destination_thread_id"`
+	DestinationMessageID     pgtype.Text        `json:"destination_message_id"`
+	Status                   string             `json:"status"`
+	LeaseToken               pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt           pgtype.Timestamptz `json:"lease_expires_at"`
+	AttemptCount             int32              `json:"attempt_count"`
+	NextAttemptAt            pgtype.Timestamptz `json:"next_attempt_at"`
+	TerminalReason           pgtype.Text        `json:"terminal_reason"`
+	LastError                pgtype.Text        `json:"last_error"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ChannelDeliveryMessage struct {
+	ID               pgtype.UUID        `json:"id"`
+	DeliveryID       pgtype.UUID        `json:"delivery_id"`
+	SourceCommentID  pgtype.UUID        `json:"source_comment_id"`
+	Ordinal          int32              `json:"ordinal"`
+	IdempotencyKey   string             `json:"idempotency_key"`
+	ChannelMessageID pgtype.Text        `json:"channel_message_id"`
+	Status           string             `json:"status"`
+	AttemptCount     int32              `json:"attempt_count"`
+	LastError        pgtype.Text        `json:"last_error"`
+	SentAt           pgtype.Timestamptz `json:"sent_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ChannelInboundAudit struct {
@@ -329,6 +374,8 @@ type ChannelInstallation struct {
 	InstalledAt      pgtype.Timestamptz `json:"installed_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	TargetType       string             `json:"target_type"`
+	TargetID         pgtype.UUID        `json:"target_id"`
 }
 
 type ChannelMediaPendingObject struct {
@@ -357,6 +404,22 @@ type ChannelOutboundCardMessage struct {
 	Status               string             `json:"status"`
 	LastPatchedAt        pgtype.Timestamptz `json:"last_patched_at"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
+type ChannelRouteContext struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	InstallationID  pgtype.UUID        `json:"installation_id"`
+	ChannelType     string             `json:"channel_type"`
+	ConversationKey string             `json:"conversation_key"`
+	ChannelUserID   string             `json:"channel_user_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	AgentID         pgtype.UUID        `json:"agent_id"`
+	SourceMessageID pgtype.Text        `json:"source_message_id"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt      pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ChannelUserBinding struct {

@@ -228,17 +228,27 @@ function InstallationRow({
   // affordance below is the recovery path for that orphan row.
   const { getAgentName } = useActorName();
   const isActive = installation.status === "active";
-  const agentName = getAgentName(installation.agent_id);
+  const targetId = installation.agent_id ?? installation.target_id ?? "";
+  const isSquad = installation.target_type === "squad";
+  const agentName = isSquad
+    ? installation.target_name ?? `Squad ${targetId.slice(0, 8)}`
+    : getAgentName(targetId);
   return (
     <div className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
       <div className="flex items-start gap-3">
-        <ActorAvatar
-          actorType="agent"
-          actorId={installation.agent_id}
-          size="lg"
-          enableHoverCard
-          profileLink
-        />
+        {isSquad ? (
+          <div className="flex size-10 items-center justify-center rounded-md bg-muted text-caption font-medium">
+            SQ
+          </div>
+        ) : (
+          <ActorAvatar
+            actorType="agent"
+            actorId={targetId}
+            size="lg"
+            enableHoverCard
+            profileLink
+          />
+        )}
         <div className="space-y-1">
           <p className="text-body font-medium">
             {agentName}
@@ -439,6 +449,50 @@ export function LarkAgentBindButton({
           wsId={wsId}
           agentId={agentId}
           agentName={agentName}
+          region={dialogRegion}
+          onClose={() => setDialogRegion(null)}
+        />
+      )}
+    </>
+  );
+}
+
+export function LarkSquadBindButton({
+  squadId,
+  squadName,
+}: {
+  squadId: string;
+  squadName: string;
+}) {
+  const { t } = useT("settings");
+  const wsId = useWorkspaceId();
+  const [dialogRegion, setDialogRegion] = useState<"feishu" | "lark" | null>(null);
+  const { data: listing } = useQuery({
+    ...larkInstallationsOptions(wsId),
+    enabled: !!wsId,
+  });
+  const existing = listing?.installations.find(
+    (installation) =>
+      installation.status === "active" &&
+      installation.target_type === "squad" &&
+      installation.target_id === squadId,
+  );
+  if (existing) {
+    return <LarkAgentBotConnectedBadge installation={existing} className="min-w-64" />;
+  }
+  if (listing?.install_supported !== true) return null;
+  return (
+    <>
+      <Button variant="outline" size="sm" onClick={() => setDialogRegion("feishu")}>
+        <ExternalLink className="h-3 w-3" />
+        {t(($) => $.lark.bind_button_feishu)}
+      </Button>
+      {dialogRegion && (
+        <LarkInstallDialog
+          wsId={wsId}
+          agentId={squadId}
+          agentName={squadName}
+          targetType="squad"
           region={dialogRegion}
           onClose={() => setDialogRegion(null)}
         />
@@ -658,16 +712,18 @@ function LarkAgentBotConnectedBadge({
 // (title, scan hint, link fallback) reflects the cloud the user
 // picked. Defaulting it would silently route Lark users to a Feishu QR
 // — exactly the confusion this split-CTA refactor is meant to remove.
-function LarkInstallDialog({
+export function LarkInstallDialog({
   wsId,
   agentId,
   agentName,
+  targetType = "agent",
   region,
   onClose,
 }: {
   wsId: string;
   agentId: string;
   agentName?: string;
+  targetType?: "agent" | "squad";
   region: "feishu" | "lark";
   onClose: () => void;
 }) {
@@ -702,7 +758,9 @@ function LarkInstallDialog({
     setErrorMessage(null);
     setSession(null);
     try {
-      const res = await api.beginLarkInstall(wsId, agentId, region);
+      const res = targetType === "agent"
+        ? await api.beginLarkInstall(wsId, agentId, region)
+        : await api.beginLarkInstall(wsId, agentId, region, "squad");
       if (closedRef.current) return;
       setSession({
         sessionId: res.session_id,

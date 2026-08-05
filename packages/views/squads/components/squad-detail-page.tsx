@@ -62,6 +62,7 @@ import { toast } from "sonner";
 import type { Squad, SquadMember, SquadMemberStatus, SquadMemberStatusValue, Agent, MemberWithUser } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { LarkSquadBindButton } from "../../settings/components/lark-tab";
 
 export function SquadDetailPage() {
   const { t } = useT("squads");
@@ -211,10 +212,13 @@ export function SquadDetailPage() {
         }
         actions={
           canManage ? (
-            <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setConfirmArchive(true)}>
-              <Trash2 className="size-3.5 mr-1" />
-              {t(($) => $.inspector.archive_button)}
-            </Button>
+            <div className="flex items-center gap-2">
+              <LarkSquadBindButton squadId={squad.id} squadName={squad.name} />
+              <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setConfirmArchive(true)}>
+                <Trash2 className="size-3.5 mr-1" />
+                {t(($) => $.inspector.archive_button)}
+              </Button>
+            </div>
           ) : null
         }
       />

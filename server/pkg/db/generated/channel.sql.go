@@ -23,7 +23,7 @@ WHERE id = $3
         OR ws_lease_expires_at < now()
         OR ws_lease_token = $1
   )
-RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id
 `
 
 type AcquireChannelWSLeaseParams struct {
@@ -50,6 +50,8 @@ func (q *Queries) AcquireChannelWSLease(ctx context.Context, arg AcquireChannelW
 		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
 	)
 	return i, err
 }
@@ -71,6 +73,53 @@ func (q *Queries) BackfillChannelInstallationRegionToFeishuLark(ctx context.Cont
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const cancelChannelRouteContext = `-- name: CancelChannelRouteContext :execrows
+UPDATE channel_route_context
+SET consumed_at = now(), updated_at = now()
+WHERE installation_id = $1
+  AND conversation_key = $2
+  AND channel_user_id = $3
+  AND consumed_at IS NULL
+`
+
+type CancelChannelRouteContextParams struct {
+	InstallationID  pgtype.UUID `json:"installation_id"`
+	ConversationKey string      `json:"conversation_key"`
+	ChannelUserID   string      `json:"channel_user_id"`
+}
+
+func (q *Queries) CancelChannelRouteContext(ctx context.Context, arg CancelChannelRouteContextParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelChannelRouteContext, arg.InstallationID, arg.ConversationKey, arg.ChannelUserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const channelDeliveryMessageWasSentToUser = `-- name: ChannelDeliveryMessageWasSentToUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM channel_delivery_message m
+    JOIN channel_delivery d ON d.id = m.delivery_id
+    WHERE m.source_comment_id = $1
+      AND d.source_user_id = $2
+      AND d.kind = 'conversation_reply'
+      AND m.status = 'sent'
+) AS was_sent
+`
+
+type ChannelDeliveryMessageWasSentToUserParams struct {
+	SourceCommentID pgtype.UUID `json:"source_comment_id"`
+	UserID          pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) ChannelDeliveryMessageWasSentToUser(ctx context.Context, arg ChannelDeliveryMessageWasSentToUserParams) (bool, error) {
+	row := q.db.QueryRow(ctx, channelDeliveryMessageWasSentToUser, arg.SourceCommentID, arg.UserID)
+	var was_sent bool
+	err := row.Scan(&was_sent)
+	return was_sent, err
 }
 
 const channelMediaObjectIsReferenced = `-- name: ChannelMediaObjectIsReferenced :one
@@ -270,6 +319,36 @@ func (q *Queries) ConsumeChannelBindingToken(ctx context.Context, tokenHash stri
 	return i, err
 }
 
+const consumeChannelRouteContext = `-- name: ConsumeChannelRouteContext :one
+UPDATE channel_route_context
+SET consumed_at = now(), updated_at = now()
+WHERE id = $1
+  AND consumed_at IS NULL
+  AND expires_at > now()
+RETURNING id, workspace_id, installation_id, channel_type, conversation_key, channel_user_id, issue_id, agent_id, source_message_id, expires_at, consumed_at, created_at, updated_at
+`
+
+func (q *Queries) ConsumeChannelRouteContext(ctx context.Context, id pgtype.UUID) (ChannelRouteContext, error) {
+	row := q.db.QueryRow(ctx, consumeChannelRouteContext, id)
+	var i ChannelRouteContext
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ConversationKey,
+		&i.ChannelUserID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceMessageID,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const countChannelMediaPendingObjects = `-- name: CountChannelMediaPendingObjects :one
 SELECT
     count(*) FILTER (WHERE state <> 'tombstoned') AS pending_objects,
@@ -347,11 +426,11 @@ func (q *Queries) CreateChannelBindingToken(ctx context.Context, arg CreateChann
 const createChannelChatSessionBinding = `-- name: CreateChannelChatSessionBinding :one
 
 INSERT INTO channel_chat_session_binding (
-    chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, config
+    chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, config, agent_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7
 )
-RETURNING id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at
+RETURNING id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at, agent_id
 `
 
 type CreateChannelChatSessionBindingParams struct {
@@ -361,6 +440,7 @@ type CreateChannelChatSessionBindingParams struct {
 	ChannelChatID  string      `json:"channel_chat_id"`
 	ChatType       string      `json:"chat_type"`
 	Config         []byte      `json:"config"`
+	AgentID        pgtype.UUID `json:"agent_id"`
 }
 
 // =====================
@@ -380,6 +460,7 @@ func (q *Queries) CreateChannelChatSessionBinding(ctx context.Context, arg Creat
 		arg.ChannelChatID,
 		arg.ChatType,
 		arg.Config,
+		arg.AgentID,
 	)
 	var i ChannelChatSessionBinding
 	err := row.Scan(
@@ -393,6 +474,139 @@ func (q *Queries) CreateChannelChatSessionBinding(ctx context.Context, arg Creat
 		&i.LastThreadID,
 		&i.Config,
 		&i.CreatedAt,
+		&i.AgentID,
+	)
+	return i, err
+}
+
+const createChannelDelivery = `-- name: CreateChannelDelivery :one
+
+INSERT INTO channel_delivery (
+    workspace_id, installation_id, channel_type, kind, request_key, route_type,
+    reply_policy, task_id, chat_session_id, issue_id, agent_id,
+    source_user_id, destination_channel_user_id, destination_chat_id,
+    destination_thread_id, destination_message_id
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11,
+    $12, $13, $14,
+    $15, $16
+)
+RETURNING id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at
+`
+
+type CreateChannelDeliveryParams struct {
+	WorkspaceID              pgtype.UUID `json:"workspace_id"`
+	InstallationID           pgtype.UUID `json:"installation_id"`
+	ChannelType              string      `json:"channel_type"`
+	Kind                     string      `json:"kind"`
+	RequestKey               pgtype.Text `json:"request_key"`
+	RouteType                string      `json:"route_type"`
+	ReplyPolicy              string      `json:"reply_policy"`
+	TaskID                   pgtype.UUID `json:"task_id"`
+	ChatSessionID            pgtype.UUID `json:"chat_session_id"`
+	IssueID                  pgtype.UUID `json:"issue_id"`
+	AgentID                  pgtype.UUID `json:"agent_id"`
+	SourceUserID             pgtype.UUID `json:"source_user_id"`
+	DestinationChannelUserID pgtype.Text `json:"destination_channel_user_id"`
+	DestinationChatID        pgtype.Text `json:"destination_chat_id"`
+	DestinationThreadID      pgtype.Text `json:"destination_thread_id"`
+	DestinationMessageID     pgtype.Text `json:"destination_message_id"`
+}
+
+// =====================
+// channel_delivery
+// =====================
+func (q *Queries) CreateChannelDelivery(ctx context.Context, arg CreateChannelDeliveryParams) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, createChannelDelivery,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.Kind,
+		arg.RequestKey,
+		arg.RouteType,
+		arg.ReplyPolicy,
+		arg.TaskID,
+		arg.ChatSessionID,
+		arg.IssueID,
+		arg.AgentID,
+		arg.SourceUserID,
+		arg.DestinationChannelUserID,
+		arg.DestinationChatID,
+		arg.DestinationThreadID,
+		arg.DestinationMessageID,
+	)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.Kind,
+		&i.RequestKey,
+		&i.RouteType,
+		&i.ReplyPolicy,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceUserID,
+		&i.DestinationChannelUserID,
+		&i.DestinationChatID,
+		&i.DestinationThreadID,
+		&i.DestinationMessageID,
+		&i.Status,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.TerminalReason,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createChannelDeliveryMessage = `-- name: CreateChannelDeliveryMessage :one
+INSERT INTO channel_delivery_message (
+    delivery_id, source_comment_id, ordinal, idempotency_key
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT (delivery_id, idempotency_key) DO UPDATE SET
+    updated_at = channel_delivery_message.updated_at
+RETURNING id, delivery_id, source_comment_id, ordinal, idempotency_key, channel_message_id, status, attempt_count, last_error, sent_at, created_at, updated_at
+`
+
+type CreateChannelDeliveryMessageParams struct {
+	DeliveryID      pgtype.UUID `json:"delivery_id"`
+	SourceCommentID pgtype.UUID `json:"source_comment_id"`
+	Ordinal         int32       `json:"ordinal"`
+	IdempotencyKey  string      `json:"idempotency_key"`
+}
+
+func (q *Queries) CreateChannelDeliveryMessage(ctx context.Context, arg CreateChannelDeliveryMessageParams) (ChannelDeliveryMessage, error) {
+	row := q.db.QueryRow(ctx, createChannelDeliveryMessage,
+		arg.DeliveryID,
+		arg.SourceCommentID,
+		arg.Ordinal,
+		arg.IdempotencyKey,
+	)
+	var i ChannelDeliveryMessage
+	err := row.Scan(
+		&i.ID,
+		&i.DeliveryID,
+		&i.SourceCommentID,
+		&i.Ordinal,
+		&i.IdempotencyKey,
+		&i.ChannelMessageID,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.SentAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -556,6 +770,23 @@ func (q *Queries) DeleteChannelChatSessionBindingsByInstallation(ctx context.Con
 	return err
 }
 
+const deleteChannelDeliveryDataByInstallation = `-- name: DeleteChannelDeliveryDataByInstallation :exec
+WITH deleted_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (
+        SELECT id FROM channel_delivery
+        WHERE channel_delivery.installation_id = $1
+    )
+)
+DELETE FROM channel_delivery
+WHERE channel_delivery.installation_id = $1
+`
+
+func (q *Queries) DeleteChannelDeliveryDataByInstallation(ctx context.Context, installationID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChannelDeliveryDataByInstallation, installationID)
+	return err
+}
+
 const deleteChannelInstallationsBySystemRuntimeAgents = `-- name: DeleteChannelInstallationsBySystemRuntimeAgents :exec
 WITH doomed AS (
     SELECT id FROM channel_installation
@@ -581,6 +812,16 @@ cleared_user_bindings AS (
 ),
 cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup WHERE installation_id IN (SELECT id FROM doomed)
+),
+cleared_route_context AS (
+    DELETE FROM channel_route_context WHERE installation_id IN (SELECT id FROM doomed)
+),
+cleared_delivery_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (SELECT id FROM channel_delivery WHERE installation_id IN (SELECT id FROM doomed))
+),
+cleared_deliveries AS (
+    DELETE FROM channel_delivery WHERE installation_id IN (SELECT id FROM doomed)
 ),
 cleared_audit AS (
     -- Hard delete: purge audit rows rather than detaching them into permanently
@@ -648,6 +889,44 @@ func (q *Queries) DeleteChannelOutboundCardMessagesBySession(ctx context.Context
 	return err
 }
 
+const deleteChannelRouteContextsByInstallation = `-- name: DeleteChannelRouteContextsByInstallation :exec
+DELETE FROM channel_route_context WHERE installation_id = $1
+`
+
+func (q *Queries) DeleteChannelRouteContextsByInstallation(ctx context.Context, installationID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChannelRouteContextsByInstallation, installationID)
+	return err
+}
+
+const deleteChannelRoutingDataByIssue = `-- name: DeleteChannelRoutingDataByIssue :exec
+WITH deleted_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (
+        SELECT id FROM channel_delivery
+        WHERE channel_delivery.issue_id = $1
+          AND channel_delivery.workspace_id = $2
+    )
+),
+deleted_deliveries AS (
+    DELETE FROM channel_delivery
+    WHERE channel_delivery.issue_id = $1
+      AND channel_delivery.workspace_id = $2
+)
+DELETE FROM channel_route_context
+WHERE channel_route_context.issue_id = $1
+  AND channel_route_context.workspace_id = $2
+`
+
+type DeleteChannelRoutingDataByIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteChannelRoutingDataByIssue(ctx context.Context, arg DeleteChannelRoutingDataByIssueParams) error {
+	_, err := q.db.Exec(ctx, deleteChannelRoutingDataByIssue, arg.IssueID, arg.WorkspaceID)
+	return err
+}
+
 const deleteChannelUserBindingsByInstallation = `-- name: DeleteChannelUserBindingsByInstallation :exec
 DELETE FROM channel_user_binding
 WHERE installation_id = $1
@@ -682,6 +961,19 @@ type DeleteChannelUserBindingsByWorkspaceMemberParams struct {
 func (q *Queries) DeleteChannelUserBindingsByWorkspaceMember(ctx context.Context, arg DeleteChannelUserBindingsByWorkspaceMemberParams) error {
 	_, err := q.db.Exec(ctx, deleteChannelUserBindingsByWorkspaceMember, arg.WorkspaceID, arg.MulticaUserID)
 	return err
+}
+
+const deleteExpiredChannelRouteContexts = `-- name: DeleteExpiredChannelRouteContexts :execrows
+DELETE FROM channel_route_context
+WHERE expires_at <= now() OR consumed_at < now() - $1::interval
+`
+
+func (q *Queries) DeleteExpiredChannelRouteContexts(ctx context.Context, consumedRetention pgtype.Interval) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredChannelRouteContexts, consumedRetention)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const findReusableChannelUserBinding = `-- name: FindReusableChannelUserBinding :one
@@ -738,19 +1030,20 @@ func (q *Queries) FindReusableChannelUserBinding(ctx context.Context, arg FindRe
 }
 
 const getChannelChatSessionBinding = `-- name: GetChannelChatSessionBinding :one
-SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at FROM channel_chat_session_binding
-WHERE installation_id = $1 AND channel_chat_id = $2
+SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at, agent_id FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_chat_id = $2 AND agent_id = $3
 `
 
 type GetChannelChatSessionBindingParams struct {
 	InstallationID pgtype.UUID `json:"installation_id"`
 	ChannelChatID  string      `json:"channel_chat_id"`
+	AgentID        pgtype.UUID `json:"agent_id"`
 }
 
 // Lookup-by-channel-chat: the inbound dispatcher finds the existing
 // chat_session before deciding whether to create one.
 func (q *Queries) GetChannelChatSessionBinding(ctx context.Context, arg GetChannelChatSessionBindingParams) (ChannelChatSessionBinding, error) {
-	row := q.db.QueryRow(ctx, getChannelChatSessionBinding, arg.InstallationID, arg.ChannelChatID)
+	row := q.db.QueryRow(ctx, getChannelChatSessionBinding, arg.InstallationID, arg.ChannelChatID, arg.AgentID)
 	var i ChannelChatSessionBinding
 	err := row.Scan(
 		&i.ID,
@@ -763,12 +1056,13 @@ func (q *Queries) GetChannelChatSessionBinding(ctx context.Context, arg GetChann
 		&i.LastThreadID,
 		&i.Config,
 		&i.CreatedAt,
+		&i.AgentID,
 	)
 	return i, err
 }
 
 const getChannelChatSessionBindingBySession = `-- name: GetChannelChatSessionBindingBySession :one
-SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at FROM channel_chat_session_binding
+SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at, agent_id FROM channel_chat_session_binding
 WHERE chat_session_id = $1
   AND channel_type = $2
 `
@@ -796,12 +1090,13 @@ func (q *Queries) GetChannelChatSessionBindingBySession(ctx context.Context, arg
 		&i.LastThreadID,
 		&i.Config,
 		&i.CreatedAt,
+		&i.AgentID,
 	)
 	return i, err
 }
 
 const getChannelChatSessionBindingBySessionAny = `-- name: GetChannelChatSessionBindingBySessionAny :one
-SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at FROM channel_chat_session_binding
+SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at, agent_id FROM channel_chat_session_binding
 WHERE chat_session_id = $1
 `
 
@@ -825,12 +1120,98 @@ func (q *Queries) GetChannelChatSessionBindingBySessionAny(ctx context.Context, 
 		&i.LastThreadID,
 		&i.Config,
 		&i.CreatedAt,
+		&i.AgentID,
+	)
+	return i, err
+}
+
+const getChannelDelivery = `-- name: GetChannelDelivery :one
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM channel_delivery WHERE id = $1
+`
+
+func (q *Queries) GetChannelDelivery(ctx context.Context, id pgtype.UUID) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, getChannelDelivery, id)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.Kind,
+		&i.RequestKey,
+		&i.RouteType,
+		&i.ReplyPolicy,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceUserID,
+		&i.DestinationChannelUserID,
+		&i.DestinationChatID,
+		&i.DestinationThreadID,
+		&i.DestinationMessageID,
+		&i.Status,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.TerminalReason,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelDeliveryRouteByMessageID = `-- name: GetChannelDeliveryRouteByMessageID :one
+SELECT d.id, d.workspace_id, d.installation_id, d.channel_type, d.kind, d.request_key, d.route_type, d.reply_policy, d.task_id, d.chat_session_id, d.issue_id, d.agent_id, d.source_user_id, d.destination_channel_user_id, d.destination_chat_id, d.destination_thread_id, d.destination_message_id, d.status, d.lease_token, d.lease_expires_at, d.attempt_count, d.next_attempt_at, d.terminal_reason, d.last_error, d.created_at, d.updated_at FROM channel_delivery d
+JOIN channel_delivery_message m ON m.delivery_id = d.id
+WHERE d.installation_id = $1
+  AND m.channel_message_id = $2
+  AND m.status = 'sent'
+`
+
+type GetChannelDeliveryRouteByMessageIDParams struct {
+	InstallationID   pgtype.UUID `json:"installation_id"`
+	ChannelMessageID pgtype.Text `json:"channel_message_id"`
+}
+
+func (q *Queries) GetChannelDeliveryRouteByMessageID(ctx context.Context, arg GetChannelDeliveryRouteByMessageIDParams) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, getChannelDeliveryRouteByMessageID, arg.InstallationID, arg.ChannelMessageID)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.Kind,
+		&i.RequestKey,
+		&i.RouteType,
+		&i.ReplyPolicy,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceUserID,
+		&i.DestinationChannelUserID,
+		&i.DestinationChatID,
+		&i.DestinationThreadID,
+		&i.DestinationMessageID,
+		&i.Status,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.TerminalReason,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getChannelInstallation = `-- name: GetChannelInstallation :one
-SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id FROM channel_installation
 WHERE id = $1 AND channel_type = $2
 `
 
@@ -857,12 +1238,14 @@ func (q *Queries) GetChannelInstallation(ctx context.Context, arg GetChannelInst
 		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
 	)
 	return i, err
 }
 
 const getChannelInstallationByAppID = `-- name: GetChannelInstallationByAppID :one
-SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id FROM channel_installation
 WHERE channel_type = $1
   AND config ->> 'app_id' = $2::text
 `
@@ -896,12 +1279,14 @@ func (q *Queries) GetChannelInstallationByAppID(ctx context.Context, arg GetChan
 		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
 	)
 	return i, err
 }
 
 const getChannelInstallationInWorkspace = `-- name: GetChannelInstallationInWorkspace :one
-SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id FROM channel_installation
 WHERE id = $1
   AND workspace_id = $2
   AND channel_type = $3
@@ -929,6 +1314,8 @@ func (q *Queries) GetChannelInstallationInWorkspace(ctx context.Context, arg Get
 		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
 	)
 	return i, err
 }
@@ -936,7 +1323,7 @@ func (q *Queries) GetChannelInstallationInWorkspace(ctx context.Context, arg Get
 const getChannelInstallationOwnerByAppID = `-- name: GetChannelInstallationOwnerByAppID :one
 SELECT ci.workspace_id, ci.agent_id, a.archived_at AS agent_archived_at
 FROM channel_installation ci
-JOIN agent a ON a.id = ci.agent_id
+LEFT JOIN agent a ON ci.target_type = 'agent' AND a.id = ci.agent_id
 WHERE ci.channel_type = $1
   AND ci.config ->> 'app_id' = $2::text
 `
@@ -1030,11 +1417,410 @@ func (q *Queries) GetChannelUserBindingByUserID(ctx context.Context, arg GetChan
 	return i, err
 }
 
+const getChannelUserBindingForMulticaUser = `-- name: GetChannelUserBindingForMulticaUser :one
+SELECT id, workspace_id, multica_user_id, installation_id, channel_type, channel_user_id, config, bound_at FROM channel_user_binding
+WHERE installation_id = $1 AND multica_user_id = $2
+`
+
+type GetChannelUserBindingForMulticaUserParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	MulticaUserID  pgtype.UUID `json:"multica_user_id"`
+}
+
+func (q *Queries) GetChannelUserBindingForMulticaUser(ctx context.Context, arg GetChannelUserBindingForMulticaUserParams) (ChannelUserBinding, error) {
+	row := q.db.QueryRow(ctx, getChannelUserBindingForMulticaUser, arg.InstallationID, arg.MulticaUserID)
+	var i ChannelUserBinding
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.MulticaUserID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelUserID,
+		&i.Config,
+		&i.BoundAt,
+	)
+	return i, err
+}
+
+const getLatestProactiveChatDelivery = `-- name: GetLatestProactiveChatDelivery :one
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM channel_delivery
+WHERE installation_id = $1
+  AND agent_id = $2
+  AND kind = 'proactive_push'
+  AND route_type = 'chat'
+  AND chat_session_id IS NOT NULL
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetLatestProactiveChatDeliveryParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	AgentID        pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) GetLatestProactiveChatDelivery(ctx context.Context, arg GetLatestProactiveChatDeliveryParams) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, getLatestProactiveChatDelivery, arg.InstallationID, arg.AgentID)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.Kind,
+		&i.RequestKey,
+		&i.RouteType,
+		&i.ReplyPolicy,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceUserID,
+		&i.DestinationChannelUserID,
+		&i.DestinationChatID,
+		&i.DestinationThreadID,
+		&i.DestinationMessageID,
+		&i.Status,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.TerminalReason,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrCreateChannelDelivery = `-- name: GetOrCreateChannelDelivery :one
+WITH inserted AS (
+    INSERT INTO channel_delivery (
+        workspace_id, installation_id, channel_type, kind, request_key, route_type,
+        reply_policy, task_id, chat_session_id, issue_id, agent_id,
+        source_user_id, destination_channel_user_id, destination_chat_id,
+        destination_thread_id, destination_message_id
+    ) VALUES (
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10, $11,
+        $12, $13, $14,
+        $15, $16
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at
+)
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM inserted
+UNION ALL
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM channel_delivery
+WHERE task_id = $8
+  AND installation_id = $2
+  AND kind = $4
+  AND COALESCE(destination_chat_id, '') = COALESCE($14, '')
+  AND COALESCE(destination_channel_user_id, '') = COALESCE($13, '')
+LIMIT 1
+`
+
+type GetOrCreateChannelDeliveryParams struct {
+	WorkspaceID              pgtype.UUID `json:"workspace_id"`
+	InstallationID           pgtype.UUID `json:"installation_id"`
+	ChannelType              string      `json:"channel_type"`
+	Kind                     string      `json:"kind"`
+	RequestKey               pgtype.Text `json:"request_key"`
+	RouteType                string      `json:"route_type"`
+	ReplyPolicy              string      `json:"reply_policy"`
+	TaskID                   pgtype.UUID `json:"task_id"`
+	ChatSessionID            pgtype.UUID `json:"chat_session_id"`
+	IssueID                  pgtype.UUID `json:"issue_id"`
+	AgentID                  pgtype.UUID `json:"agent_id"`
+	SourceUserID             pgtype.UUID `json:"source_user_id"`
+	DestinationChannelUserID pgtype.Text `json:"destination_channel_user_id"`
+	DestinationChatID        pgtype.Text `json:"destination_chat_id"`
+	DestinationThreadID      pgtype.Text `json:"destination_thread_id"`
+	DestinationMessageID     pgtype.Text `json:"destination_message_id"`
+}
+
+type GetOrCreateChannelDeliveryRow struct {
+	ID                       pgtype.UUID        `json:"id"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	InstallationID           pgtype.UUID        `json:"installation_id"`
+	ChannelType              string             `json:"channel_type"`
+	Kind                     string             `json:"kind"`
+	RequestKey               pgtype.Text        `json:"request_key"`
+	RouteType                string             `json:"route_type"`
+	ReplyPolicy              string             `json:"reply_policy"`
+	TaskID                   pgtype.UUID        `json:"task_id"`
+	ChatSessionID            pgtype.UUID        `json:"chat_session_id"`
+	IssueID                  pgtype.UUID        `json:"issue_id"`
+	AgentID                  pgtype.UUID        `json:"agent_id"`
+	SourceUserID             pgtype.UUID        `json:"source_user_id"`
+	DestinationChannelUserID pgtype.Text        `json:"destination_channel_user_id"`
+	DestinationChatID        pgtype.Text        `json:"destination_chat_id"`
+	DestinationThreadID      pgtype.Text        `json:"destination_thread_id"`
+	DestinationMessageID     pgtype.Text        `json:"destination_message_id"`
+	Status                   string             `json:"status"`
+	LeaseToken               pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt           pgtype.Timestamptz `json:"lease_expires_at"`
+	AttemptCount             int32              `json:"attempt_count"`
+	NextAttemptAt            pgtype.Timestamptz `json:"next_attempt_at"`
+	TerminalReason           pgtype.Text        `json:"terminal_reason"`
+	LastError                pgtype.Text        `json:"last_error"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetOrCreateChannelDelivery(ctx context.Context, arg GetOrCreateChannelDeliveryParams) (GetOrCreateChannelDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, getOrCreateChannelDelivery,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.Kind,
+		arg.RequestKey,
+		arg.RouteType,
+		arg.ReplyPolicy,
+		arg.TaskID,
+		arg.ChatSessionID,
+		arg.IssueID,
+		arg.AgentID,
+		arg.SourceUserID,
+		arg.DestinationChannelUserID,
+		arg.DestinationChatID,
+		arg.DestinationThreadID,
+		arg.DestinationMessageID,
+	)
+	var i GetOrCreateChannelDeliveryRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.Kind,
+		&i.RequestKey,
+		&i.RouteType,
+		&i.ReplyPolicy,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceUserID,
+		&i.DestinationChannelUserID,
+		&i.DestinationChatID,
+		&i.DestinationThreadID,
+		&i.DestinationMessageID,
+		&i.Status,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.TerminalReason,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrCreateProactiveDelivery = `-- name: GetOrCreateProactiveDelivery :one
+WITH inserted AS (
+    INSERT INTO channel_delivery (
+        workspace_id, installation_id, channel_type, kind, request_key,
+        route_type, reply_policy, chat_session_id, issue_id, agent_id, source_user_id,
+        destination_channel_user_id
+    ) VALUES (
+        $1, $2, $3, 'proactive_push', $4,
+        $5, $6, $7, $8, $9, $10,
+        $11
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at
+)
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM inserted
+UNION ALL
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM channel_delivery
+WHERE installation_id = $2
+  AND kind = 'proactive_push'
+  AND request_key = $4
+LIMIT 1
+`
+
+type GetOrCreateProactiveDeliveryParams struct {
+	WorkspaceID              pgtype.UUID `json:"workspace_id"`
+	InstallationID           pgtype.UUID `json:"installation_id"`
+	ChannelType              string      `json:"channel_type"`
+	RequestKey               pgtype.Text `json:"request_key"`
+	RouteType                string      `json:"route_type"`
+	ReplyPolicy              string      `json:"reply_policy"`
+	ChatSessionID            pgtype.UUID `json:"chat_session_id"`
+	IssueID                  pgtype.UUID `json:"issue_id"`
+	AgentID                  pgtype.UUID `json:"agent_id"`
+	SourceUserID             pgtype.UUID `json:"source_user_id"`
+	DestinationChannelUserID pgtype.Text `json:"destination_channel_user_id"`
+}
+
+type GetOrCreateProactiveDeliveryRow struct {
+	ID                       pgtype.UUID        `json:"id"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	InstallationID           pgtype.UUID        `json:"installation_id"`
+	ChannelType              string             `json:"channel_type"`
+	Kind                     string             `json:"kind"`
+	RequestKey               pgtype.Text        `json:"request_key"`
+	RouteType                string             `json:"route_type"`
+	ReplyPolicy              string             `json:"reply_policy"`
+	TaskID                   pgtype.UUID        `json:"task_id"`
+	ChatSessionID            pgtype.UUID        `json:"chat_session_id"`
+	IssueID                  pgtype.UUID        `json:"issue_id"`
+	AgentID                  pgtype.UUID        `json:"agent_id"`
+	SourceUserID             pgtype.UUID        `json:"source_user_id"`
+	DestinationChannelUserID pgtype.Text        `json:"destination_channel_user_id"`
+	DestinationChatID        pgtype.Text        `json:"destination_chat_id"`
+	DestinationThreadID      pgtype.Text        `json:"destination_thread_id"`
+	DestinationMessageID     pgtype.Text        `json:"destination_message_id"`
+	Status                   string             `json:"status"`
+	LeaseToken               pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt           pgtype.Timestamptz `json:"lease_expires_at"`
+	AttemptCount             int32              `json:"attempt_count"`
+	NextAttemptAt            pgtype.Timestamptz `json:"next_attempt_at"`
+	TerminalReason           pgtype.Text        `json:"terminal_reason"`
+	LastError                pgtype.Text        `json:"last_error"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetOrCreateProactiveDelivery(ctx context.Context, arg GetOrCreateProactiveDeliveryParams) (GetOrCreateProactiveDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, getOrCreateProactiveDelivery,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.RequestKey,
+		arg.RouteType,
+		arg.ReplyPolicy,
+		arg.ChatSessionID,
+		arg.IssueID,
+		arg.AgentID,
+		arg.SourceUserID,
+		arg.DestinationChannelUserID,
+	)
+	var i GetOrCreateProactiveDeliveryRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.Kind,
+		&i.RequestKey,
+		&i.RouteType,
+		&i.ReplyPolicy,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceUserID,
+		&i.DestinationChannelUserID,
+		&i.DestinationChatID,
+		&i.DestinationThreadID,
+		&i.DestinationMessageID,
+		&i.Status,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.TerminalReason,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getPendingChannelRouteContext = `-- name: GetPendingChannelRouteContext :one
+SELECT id, workspace_id, installation_id, channel_type, conversation_key, channel_user_id, issue_id, agent_id, source_message_id, expires_at, consumed_at, created_at, updated_at FROM channel_route_context
+WHERE installation_id = $1
+  AND conversation_key = $2
+  AND channel_user_id = $3
+  AND consumed_at IS NULL
+  AND expires_at > now()
+`
+
+type GetPendingChannelRouteContextParams struct {
+	InstallationID  pgtype.UUID `json:"installation_id"`
+	ConversationKey string      `json:"conversation_key"`
+	ChannelUserID   string      `json:"channel_user_id"`
+}
+
+func (q *Queries) GetPendingChannelRouteContext(ctx context.Context, arg GetPendingChannelRouteContextParams) (ChannelRouteContext, error) {
+	row := q.db.QueryRow(ctx, getPendingChannelRouteContext, arg.InstallationID, arg.ConversationKey, arg.ChannelUserID)
+	var i ChannelRouteContext
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ConversationKey,
+		&i.ChannelUserID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceMessageID,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProactiveDeliveryByKey = `-- name: GetProactiveDeliveryByKey :one
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM channel_delivery
+WHERE installation_id = $1
+  AND kind = 'proactive_push'
+  AND request_key = $2
+`
+
+type GetProactiveDeliveryByKeyParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	RequestKey     pgtype.Text `json:"request_key"`
+}
+
+func (q *Queries) GetProactiveDeliveryByKey(ctx context.Context, arg GetProactiveDeliveryByKeyParams) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, getProactiveDeliveryByKey, arg.InstallationID, arg.RequestKey)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.Kind,
+		&i.RequestKey,
+		&i.RouteType,
+		&i.ReplyPolicy,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceUserID,
+		&i.DestinationChannelUserID,
+		&i.DestinationChatID,
+		&i.DestinationThreadID,
+		&i.DestinationMessageID,
+		&i.Status,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.TerminalReason,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listActiveChannelInstallations = `-- name: ListActiveChannelInstallations :many
-SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at FROM channel_installation ci
+SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at, ci.target_type, ci.target_id FROM channel_installation ci
 JOIN workspace w ON w.id = ci.workspace_id
-JOIN agent a ON a.id = ci.agent_id
+LEFT JOIN agent a ON ci.target_type = 'agent' AND a.id = ci.target_id
+LEFT JOIN squad s ON ci.target_type = 'squad' AND s.id = ci.target_id
 WHERE ci.status = 'active'
+  AND ((ci.target_type = 'agent' AND a.id IS NOT NULL)
+    OR (ci.target_type = 'squad' AND s.id IS NOT NULL AND s.archived_at IS NULL))
   AND ci.channel_type = $1
 ORDER BY ci.created_at ASC
 `
@@ -1073,6 +1859,8 @@ func (q *Queries) ListActiveChannelInstallations(ctx context.Context, channelTyp
 			&i.InstalledAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TargetType,
+			&i.TargetID,
 		); err != nil {
 			return nil, err
 		}
@@ -1085,10 +1873,13 @@ func (q *Queries) ListActiveChannelInstallations(ctx context.Context, channelTyp
 }
 
 const listAllActiveChannelInstallations = `-- name: ListAllActiveChannelInstallations :many
-SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at FROM channel_installation ci
+SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at, ci.target_type, ci.target_id FROM channel_installation ci
 JOIN workspace w ON w.id = ci.workspace_id
-JOIN agent a ON a.id = ci.agent_id
+LEFT JOIN agent a ON ci.target_type = 'agent' AND a.id = ci.target_id
+LEFT JOIN squad s ON ci.target_type = 'squad' AND s.id = ci.target_id
 WHERE ci.status = 'active'
+  AND ((ci.target_type = 'agent' AND a.id IS NOT NULL)
+    OR (ci.target_type = 'squad' AND s.id IS NOT NULL AND s.archived_at IS NULL))
 ORDER BY ci.created_at ASC
 `
 
@@ -1121,6 +1912,100 @@ func (q *Queries) ListAllActiveChannelInstallations(ctx context.Context) ([]Chan
 			&i.WsLeaseExpiresAt,
 			&i.InstallerUserID,
 			&i.InstalledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TargetType,
+			&i.TargetID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelDeliveriesByTask = `-- name: ListChannelDeliveriesByTask :many
+SELECT id, workspace_id, installation_id, channel_type, kind, request_key, route_type, reply_policy, task_id, chat_session_id, issue_id, agent_id, source_user_id, destination_channel_user_id, destination_chat_id, destination_thread_id, destination_message_id, status, lease_token, lease_expires_at, attempt_count, next_attempt_at, terminal_reason, last_error, created_at, updated_at FROM channel_delivery
+WHERE task_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListChannelDeliveriesByTask(ctx context.Context, taskID pgtype.UUID) ([]ChannelDelivery, error) {
+	rows, err := q.db.Query(ctx, listChannelDeliveriesByTask, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDelivery{}
+	for rows.Next() {
+		var i ChannelDelivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.ChannelType,
+			&i.Kind,
+			&i.RequestKey,
+			&i.RouteType,
+			&i.ReplyPolicy,
+			&i.TaskID,
+			&i.ChatSessionID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.SourceUserID,
+			&i.DestinationChannelUserID,
+			&i.DestinationChatID,
+			&i.DestinationThreadID,
+			&i.DestinationMessageID,
+			&i.Status,
+			&i.LeaseToken,
+			&i.LeaseExpiresAt,
+			&i.AttemptCount,
+			&i.NextAttemptAt,
+			&i.TerminalReason,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelDeliveryMessages = `-- name: ListChannelDeliveryMessages :many
+SELECT id, delivery_id, source_comment_id, ordinal, idempotency_key, channel_message_id, status, attempt_count, last_error, sent_at, created_at, updated_at FROM channel_delivery_message
+WHERE delivery_id = $1
+ORDER BY ordinal ASC, created_at ASC
+`
+
+func (q *Queries) ListChannelDeliveryMessages(ctx context.Context, deliveryID pgtype.UUID) ([]ChannelDeliveryMessage, error) {
+	rows, err := q.db.Query(ctx, listChannelDeliveryMessages, deliveryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDeliveryMessage{}
+	for rows.Next() {
+		var i ChannelDeliveryMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeliveryID,
+			&i.SourceCommentID,
+			&i.Ordinal,
+			&i.IdempotencyKey,
+			&i.ChannelMessageID,
+			&i.Status,
+			&i.AttemptCount,
+			&i.LastError,
+			&i.SentAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1178,7 +2063,7 @@ func (q *Queries) ListChannelInboundAuditByInstallation(ctx context.Context, arg
 }
 
 const listChannelInstallationsByWorkspace = `-- name: ListChannelInstallationsByWorkspace :many
-SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id FROM channel_installation
 WHERE workspace_id = $1
   AND channel_type = $2
 ORDER BY created_at ASC
@@ -1213,6 +2098,8 @@ func (q *Queries) ListChannelInstallationsByWorkspace(ctx context.Context, arg L
 			&i.InstalledAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TargetType,
+			&i.TargetID,
 		); err != nil {
 			return nil, err
 		}
@@ -1222,6 +2109,51 @@ func (q *Queries) ListChannelInstallationsByWorkspace(ctx context.Context, arg L
 		return nil, err
 	}
 	return items, nil
+}
+
+const markChannelDeliveryMessageFailed = `-- name: MarkChannelDeliveryMessageFailed :execrows
+UPDATE channel_delivery_message
+SET status = 'failed',
+    attempt_count = attempt_count + 1,
+    last_error = $1,
+    updated_at = now()
+WHERE id = $2 AND status <> 'sent'
+`
+
+type MarkChannelDeliveryMessageFailedParams struct {
+	LastError pgtype.Text `json:"last_error"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkChannelDeliveryMessageFailed(ctx context.Context, arg MarkChannelDeliveryMessageFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markChannelDeliveryMessageFailed, arg.LastError, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markChannelDeliveryMessageSent = `-- name: MarkChannelDeliveryMessageSent :execrows
+UPDATE channel_delivery_message
+SET status = 'sent',
+    channel_message_id = $1,
+    sent_at = now(),
+    last_error = NULL,
+    updated_at = now()
+WHERE id = $2 AND status <> 'sent'
+`
+
+type MarkChannelDeliveryMessageSentParams struct {
+	ChannelMessageID pgtype.Text `json:"channel_message_id"`
+	ID               pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkChannelDeliveryMessageSent(ctx context.Context, arg MarkChannelDeliveryMessageSentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markChannelDeliveryMessageSent, arg.ChannelMessageID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markChannelInboundDedupProcessed = `-- name: MarkChannelInboundDedupProcessed :execrows
@@ -1299,7 +2231,8 @@ WITH dead AS (
                 AND NOT (ci.workspace_id = $3
                          AND ci.agent_id = $4))
          OR NOT EXISTS (SELECT 1 FROM workspace w WHERE w.id = ci.workspace_id)
-         OR NOT EXISTS (SELECT 1 FROM agent a WHERE a.id = ci.agent_id)
+         OR (ci.target_type = 'agent' AND NOT EXISTS (SELECT 1 FROM agent a WHERE a.id = ci.target_id))
+         OR (ci.target_type = 'squad' AND NOT EXISTS (SELECT 1 FROM squad s WHERE s.id = ci.target_id))
       )
     RETURNING ci.id
 ),
@@ -1326,6 +2259,18 @@ cleared_user_bindings AS (
 ),
 cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup
+    WHERE installation_id IN (SELECT id FROM dead)
+),
+cleared_route_context AS (
+    DELETE FROM channel_route_context
+    WHERE installation_id IN (SELECT id FROM dead)
+),
+cleared_delivery_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (SELECT id FROM channel_delivery WHERE installation_id IN (SELECT id FROM dead))
+),
+cleared_deliveries AS (
+    DELETE FROM channel_delivery
     WHERE installation_id IN (SELECT id FROM dead)
 ),
 detached_audit AS (
@@ -1560,6 +2505,37 @@ func (q *Queries) ReleaseChannelWSLease(ctx context.Context, arg ReleaseChannelW
 	return err
 }
 
+const setChannelDeliveryStatus = `-- name: SetChannelDeliveryStatus :execrows
+UPDATE channel_delivery
+SET status = $1,
+    terminal_reason = $2,
+    last_error = $3,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    updated_at = now()
+WHERE id = $4
+`
+
+type SetChannelDeliveryStatusParams struct {
+	Status         string      `json:"status"`
+	TerminalReason pgtype.Text `json:"terminal_reason"`
+	LastError      pgtype.Text `json:"last_error"`
+	ID             pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) SetChannelDeliveryStatus(ctx context.Context, arg SetChannelDeliveryStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setChannelDeliveryStatus,
+		arg.Status,
+		arg.TerminalReason,
+		arg.LastError,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setChannelInstallationConfig = `-- name: SetChannelInstallationConfig :exec
 UPDATE channel_installation
 SET config = $2, updated_at = now()
@@ -1685,18 +2661,19 @@ const upsertChannelInstallation = `-- name: UpsertChannelInstallation :one
 
 
 INSERT INTO channel_installation (
-    workspace_id, agent_id, channel_type, config, installer_user_id
+    workspace_id, agent_id, target_type, target_id, channel_type, config, installer_user_id
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, 'agent', $2, $3, $4, $5
 )
-ON CONFLICT (workspace_id, agent_id, channel_type) DO UPDATE SET
+ON CONFLICT (workspace_id, target_type, target_id, channel_type) DO UPDATE SET
+    agent_id          = EXCLUDED.agent_id,
     channel_type      = EXCLUDED.channel_type,
     config            = EXCLUDED.config,
     installer_user_id = EXCLUDED.installer_user_id,
     status            = 'active',
     installed_at      = now(),
     updated_at        = now()
-RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id
 `
 
 type UpsertChannelInstallationParams struct {
@@ -1752,15 +2729,17 @@ func (q *Queries) UpsertChannelInstallation(ctx context.Context, arg UpsertChann
 		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
 	)
 	return i, err
 }
 
 const upsertChannelInstallationByAppID = `-- name: UpsertChannelInstallationByAppID :one
 INSERT INTO channel_installation (
-    workspace_id, agent_id, channel_type, config, installer_user_id
+    workspace_id, agent_id, target_type, target_id, channel_type, config, installer_user_id
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, 'agent', $2, $3, $4, $5
 )
 ON CONFLICT (channel_type, (config ->> 'app_id')) DO UPDATE SET
     agent_id          = EXCLUDED.agent_id,
@@ -1770,7 +2749,7 @@ ON CONFLICT (channel_type, (config ->> 'app_id')) DO UPDATE SET
     installed_at      = now(),
     updated_at        = now()
 WHERE channel_installation.workspace_id = EXCLUDED.workspace_id
-RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id
 `
 
 type UpsertChannelInstallationByAppIDParams struct {
@@ -1820,6 +2799,137 @@ func (q *Queries) UpsertChannelInstallationByAppID(ctx context.Context, arg Upse
 		&i.WsLeaseExpiresAt,
 		&i.InstallerUserID,
 		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
+	)
+	return i, err
+}
+
+const upsertChannelInstallationTarget = `-- name: UpsertChannelInstallationTarget :one
+INSERT INTO channel_installation (
+    workspace_id, agent_id, target_type, target_id, channel_type, config, installer_user_id
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7
+)
+ON CONFLICT (workspace_id, target_type, target_id, channel_type) DO UPDATE SET
+    agent_id          = EXCLUDED.agent_id,
+    config            = EXCLUDED.config,
+    installer_user_id = EXCLUDED.installer_user_id,
+    status            = 'active',
+    installed_at      = now(),
+    updated_at        = now()
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id
+`
+
+type UpsertChannelInstallationTargetParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	TargetType      string      `json:"target_type"`
+	TargetID        pgtype.UUID `json:"target_id"`
+	ChannelType     string      `json:"channel_type"`
+	Config          []byte      `json:"config"`
+	InstallerUserID pgtype.UUID `json:"installer_user_id"`
+}
+
+// Squad-aware install path. Agent targets keep agent_id populated for backward
+// compatibility; squad targets keep it NULL so the current leader is resolved
+// at message time rather than snapshotted at installation time.
+func (q *Queries) UpsertChannelInstallationTarget(ctx context.Context, arg UpsertChannelInstallationTargetParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, upsertChannelInstallationTarget,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.TargetType,
+		arg.TargetID,
+		arg.ChannelType,
+		arg.Config,
+		arg.InstallerUserID,
+	)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
+	)
+	return i, err
+}
+
+const upsertChannelRouteContext = `-- name: UpsertChannelRouteContext :one
+
+INSERT INTO channel_route_context (
+    workspace_id, installation_id, channel_type, conversation_key,
+    channel_user_id, issue_id, agent_id, source_message_id, expires_at
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8, $9
+)
+ON CONFLICT (installation_id, conversation_key, channel_user_id)
+WHERE consumed_at IS NULL
+DO UPDATE SET
+    workspace_id      = EXCLUDED.workspace_id,
+    channel_type      = EXCLUDED.channel_type,
+    issue_id          = EXCLUDED.issue_id,
+    agent_id          = EXCLUDED.agent_id,
+    source_message_id = EXCLUDED.source_message_id,
+    expires_at        = EXCLUDED.expires_at,
+    updated_at        = now()
+RETURNING id, workspace_id, installation_id, channel_type, conversation_key, channel_user_id, issue_id, agent_id, source_message_id, expires_at, consumed_at, created_at, updated_at
+`
+
+type UpsertChannelRouteContextParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	InstallationID  pgtype.UUID        `json:"installation_id"`
+	ChannelType     string             `json:"channel_type"`
+	ConversationKey string             `json:"conversation_key"`
+	ChannelUserID   string             `json:"channel_user_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	AgentID         pgtype.UUID        `json:"agent_id"`
+	SourceMessageID pgtype.Text        `json:"source_message_id"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+}
+
+// =====================
+// channel_route_context
+// =====================
+func (q *Queries) UpsertChannelRouteContext(ctx context.Context, arg UpsertChannelRouteContextParams) (ChannelRouteContext, error) {
+	row := q.db.QueryRow(ctx, upsertChannelRouteContext,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.ConversationKey,
+		arg.ChannelUserID,
+		arg.IssueID,
+		arg.AgentID,
+		arg.SourceMessageID,
+		arg.ExpiresAt,
+	)
+	var i ChannelRouteContext
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ConversationKey,
+		&i.ChannelUserID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.SourceMessageID,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

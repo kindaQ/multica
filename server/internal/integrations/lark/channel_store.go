@@ -129,9 +129,19 @@ func (s *ChannelStore) UpsertLarkInstallation(ctx context.Context, arg UpsertIns
 	if err != nil {
 		return Installation{}, err
 	}
-	row, err := s.Queries.UpsertChannelInstallation(ctx, db.UpsertChannelInstallationParams{
+	targetType := arg.TargetType
+	if targetType == "" {
+		targetType = string(InstallationTargetAgent)
+	}
+	targetID := arg.TargetID
+	if !targetID.Valid {
+		targetID = arg.AgentID
+	}
+	row, err := s.Queries.UpsertChannelInstallationTarget(ctx, db.UpsertChannelInstallationTargetParams{
 		WorkspaceID:     arg.WorkspaceID,
 		AgentID:         arg.AgentID,
+		TargetType:      targetType,
+		TargetID:        targetID,
 		ChannelType:     channelTypeFeishu,
 		Config:          cfg,
 		InstallerUserID: arg.InstallerUserID,

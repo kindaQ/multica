@@ -43,6 +43,8 @@ type Installation struct {
 	ID                 pgtype.UUID
 	WorkspaceID        pgtype.UUID
 	AgentID            pgtype.UUID
+	TargetType         string
+	TargetID           pgtype.UUID
 	AppID              string
 	AppSecretEncrypted []byte
 	TenantKey          pgtype.Text
@@ -75,6 +77,7 @@ type ChatSessionBinding struct {
 	ID             pgtype.UUID
 	ChatSessionID  pgtype.UUID
 	InstallationID pgtype.UUID
+	AgentID        pgtype.UUID
 	ChannelChatID  string
 	ChatType       string
 	// Config carries the real chat id (larkBindingConfig) when ChannelChatID
@@ -156,6 +159,8 @@ func installationFromRow(row db.ChannelInstallation) (Installation, error) {
 		ID:                 row.ID,
 		WorkspaceID:        row.WorkspaceID,
 		AgentID:            row.AgentID,
+		TargetType:         row.TargetType,
+		TargetID:           row.TargetID,
 		AppID:              cfg.AppID,
 		AppSecretEncrypted: secret,
 		TenantKey:          textOrNull(cfg.TenantKey),
@@ -222,6 +227,7 @@ func chatSessionBindingFromRow(row db.ChannelChatSessionBinding) ChatSessionBind
 		ID:             row.ID,
 		ChatSessionID:  row.ChatSessionID,
 		InstallationID: row.InstallationID,
+		AgentID:        row.AgentID,
 		ChannelChatID:  row.ChannelChatID,
 		ChatType:       row.ChatType,
 		Config:         row.Config,

@@ -135,6 +135,7 @@ type RegistrationService struct {
 // *db.Queries + Postgres fixture.
 type authQueriesAdapter interface {
 	GetAgentInWorkspace(ctx context.Context, params db.GetAgentInWorkspaceParams) (db.Agent, error)
+	GetSquadInWorkspace(ctx context.Context, params db.GetSquadInWorkspaceParams) (db.Squad, error)
 }
 
 // NewRegistrationService wires the device-flow client, the APIClient
@@ -218,6 +219,8 @@ type registrationSession struct {
 	id          string
 	workspaceID pgtype.UUID
 	agentID     pgtype.UUID
+	targetType  InstallationTargetType
+	targetID    pgtype.UUID
 	initiatorID pgtype.UUID
 
 	deviceCode string
@@ -301,6 +304,8 @@ type RegistrationSessionState struct {
 type BeginInstallParams struct {
 	WorkspaceID pgtype.UUID
 	AgentID     pgtype.UUID
+	TargetType  InstallationTargetType
+	TargetID    pgtype.UUID
 	InitiatorID pgtype.UUID
 	// Region picks which cloud's accounts host the device-flow begins
 	// against — Feishu (mainland, accounts.feishu.cn) or Lark
@@ -334,8 +339,13 @@ type BeginInstallResult struct {
 // the device_code is server-side only (Lark would honor a poll from
 // anywhere if the device_code leaked, so we never echo it).
 func (s *RegistrationService) BeginInstall(ctx context.Context, p BeginInstallParams) (BeginInstallResult, error) {
-	if !p.WorkspaceID.Valid || !p.AgentID.Valid || !p.InitiatorID.Valid {
-		return BeginInstallResult{}, errors.New("lark registration: workspace, agent, and initiator are required")
+	targetType := normalizeInstallationTargetType(p.TargetType)
+	targetID := p.TargetID
+	if !targetID.Valid {
+		targetID = p.AgentID
+	}
+	if !p.WorkspaceID.Valid || !targetID.Valid || !p.InitiatorID.Valid {
+		return BeginInstallResult{}, errors.New("lark registration: workspace, target, and initiator are required")
 	}
 	// Agent↔workspace pre-check — without this, a caller could open an
 	// install session against another workspace's agent by guessing the
@@ -346,12 +356,33 @@ func (s *RegistrationService) BeginInstall(ctx context.Context, p BeginInstallPa
 	// We keep the agent: its name pre-fills the bot name on Lark's
 	// PersonalAgent creation form (see botNamePreset) so the installed
 	// bot reads "<agent> - Multica" instead of "{用户姓名}的智能助手".
-	agent, err := s.authQueries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
-		ID:          p.AgentID,
-		WorkspaceID: p.WorkspaceID,
-	})
-	if err != nil {
-		return BeginInstallResult{}, fmt.Errorf("lark registration: agent not in workspace: %w", err)
+	var botName string
+	var agentID pgtype.UUID
+	switch targetType {
+	case InstallationTargetAgent:
+		agent, err := s.authQueries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
+			ID:          targetID,
+			WorkspaceID: p.WorkspaceID,
+		})
+		if err != nil {
+			return BeginInstallResult{}, fmt.Errorf("lark registration: agent not in workspace: %w", err)
+		}
+		agentID = agent.ID
+		botName = agent.Name
+	case InstallationTargetSquad:
+		squad, err := s.authQueries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+			ID:          targetID,
+			WorkspaceID: p.WorkspaceID,
+		})
+		if err != nil {
+			return BeginInstallResult{}, fmt.Errorf("lark registration: squad not in workspace: %w", err)
+		}
+		if squad.ArchivedAt.Valid {
+			return BeginInstallResult{}, errors.New("lark registration: squad is archived")
+		}
+		botName = squad.Name
+	default:
+		return BeginInstallResult{}, errors.New("lark registration: target_type must be agent or squad")
 	}
 
 	// Normalize the requested region: empty / unknown → Feishu, the same
@@ -361,7 +392,7 @@ func (s *RegistrationService) BeginInstall(ctx context.Context, p BeginInstallPa
 	// field) keeps getting the historical mainland-first behaviour.
 	region := RegionOrDefault(string(p.Region))
 
-	begin, err := s.client.Begin(ctx, botNamePreset(agent.Name), region)
+	begin, err := s.client.Begin(ctx, botNamePreset(botName), region)
 	if err != nil {
 		return BeginInstallResult{}, fmt.Errorf("lark registration: begin: %w", err)
 	}
@@ -374,7 +405,9 @@ func (s *RegistrationService) BeginInstall(ctx context.Context, p BeginInstallPa
 	sess := &registrationSession{
 		id:          sessionID,
 		workspaceID: p.WorkspaceID,
-		agentID:     p.AgentID,
+		agentID:     agentID,
+		targetType:  targetType,
+		targetID:    targetID,
 		initiatorID: p.InitiatorID,
 		deviceCode:  begin.DeviceCode,
 		domain:      begin.Domain,
@@ -596,6 +629,8 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 	inst, err := qtx.UpsertLarkInstallation(ctx, UpsertInstallationParams{
 		WorkspaceID:        sess.workspaceID,
 		AgentID:            sess.agentID,
+		TargetType:         string(sess.targetType),
+		TargetID:           sess.targetID,
 		AppID:              res.ClientID,
 		AppSecretEncrypted: sealed,
 		BotOpenID:          string(info.OpenID),

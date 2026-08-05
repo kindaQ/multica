@@ -76,6 +76,7 @@ const (
 	OutcomeAgentOffline Outcome = "agent_offline"
 	// OutcomeAgentArchived — landed, but the agent is archived.
 	OutcomeAgentArchived Outcome = "agent_archived"
+	OutcomeControl       Outcome = "control"
 )
 
 // DispatchResult is the Feishu-side verdict the OutcomeReplier consumes to
@@ -98,4 +99,5 @@ type DispatchResult struct {
 	// IssueDuplicate distinguishes an active-issue conflict from a successful
 	// create while carrying the existing issue fields above.
 	IssueDuplicate bool
+	Message        string
 }

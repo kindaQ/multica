@@ -11,6 +11,13 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+type InstallationTargetType string
+
+const (
+	InstallationTargetAgent InstallationTargetType = "agent"
+	InstallationTargetSquad InstallationTargetType = "squad"
+)
+
 // InstallationParams is the input shape RegistrationService assembles
 // after a successful device-flow scan-to-install. The credentials are
 // supplied here as plaintext — encryption happens inside
@@ -20,6 +27,8 @@ import (
 type InstallationParams struct {
 	WorkspaceID     pgtype.UUID
 	AgentID         pgtype.UUID
+	TargetType      InstallationTargetType
+	TargetID        pgtype.UUID
 	AppID           string
 	AppSecret       string // plaintext; encrypted at the service boundary
 	TenantKey       string // optional, "" treated as NULL
@@ -67,6 +76,8 @@ func (s *InstallationService) Upsert(ctx context.Context, p InstallationParams) 
 	return s.queries.UpsertLarkInstallation(ctx, UpsertInstallationParams{
 		WorkspaceID:        p.WorkspaceID,
 		AgentID:            p.AgentID,
+		TargetType:         string(normalizeInstallationTargetType(p.TargetType)),
+		TargetID:           normalizedInstallationTargetID(p),
 		AppID:              p.AppID,
 		AppSecretEncrypted: sealed,
 		TenantKey:          textOrNull(p.TenantKey),
@@ -76,16 +87,39 @@ func (s *InstallationService) Upsert(ctx context.Context, p InstallationParams) 
 	})
 }
 
+func normalizeInstallationTargetType(targetType InstallationTargetType) InstallationTargetType {
+	if targetType == "" {
+		return InstallationTargetAgent
+	}
+	return targetType
+}
+
+func normalizedInstallationTargetID(p InstallationParams) pgtype.UUID {
+	if p.TargetID.Valid {
+		return p.TargetID
+	}
+	return p.AgentID
+}
+
 // Revoke flips status to 'revoked' so the WS hub tears the connection
 // down on its next sweep and the dispatcher drops any in-flight
 // events. The row is preserved (no DELETE) so audit history remains
 // queryable; a subsequent re-install via Upsert flips status back to
 // 'active' atomically.
 func (s *InstallationService) Revoke(ctx context.Context, id pgtype.UUID) error {
-	return s.queries.SetLarkInstallationStatus(ctx, SetInstallationStatusParams{
+	if err := s.queries.SetLarkInstallationStatus(ctx, SetInstallationStatusParams{
 		ID:     id,
 		Status: string(InstallationRevoked),
-	})
+	}); err != nil {
+		return err
+	}
+	if err := s.queries.DeleteChannelRouteContextsByInstallation(ctx, id); err != nil {
+		return fmt.Errorf("clean route contexts after revoke: %w", err)
+	}
+	if err := s.queries.DeleteChannelDeliveryDataByInstallation(ctx, id); err != nil {
+		return fmt.Errorf("clean deliveries after revoke: %w", err)
+	}
+	return nil
 }
 
 // DecryptAppSecret returns the plaintext app_secret for the supplied
@@ -134,11 +168,19 @@ func (s *InstallationService) ListByWorkspace(ctx context.Context, workspaceID p
 var ErrInstallationNotFound = errors.New("lark installation not found")
 
 func validateInstallationParams(p InstallationParams) error {
+	targetType := normalizeInstallationTargetType(p.TargetType)
+	targetID := normalizedInstallationTargetID(p)
 	switch {
 	case !p.WorkspaceID.Valid:
 		return errors.New("workspace_id is required")
-	case !p.AgentID.Valid:
-		return errors.New("agent_id is required")
+	case targetType != InstallationTargetAgent && targetType != InstallationTargetSquad:
+		return errors.New("target_type must be agent or squad")
+	case !targetID.Valid:
+		return errors.New("target_id is required")
+	case targetType == InstallationTargetAgent && !p.AgentID.Valid:
+		return errors.New("agent_id is required for an agent target")
+	case targetType == InstallationTargetSquad && p.AgentID.Valid:
+		return errors.New("agent_id must be empty for a squad target")
 	case !p.InstallerUserID.Valid:
 		return errors.New("installer_user_id is required")
 	case p.AppID == "":

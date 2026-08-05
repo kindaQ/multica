@@ -1096,6 +1096,28 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{})
 }
 
+// EnqueueTaskForMentionWithQueries creates the task through a transaction-
+// scoped query handle without publishing or waking a daemon before commit.
+// The caller must invoke PublishTaskQueued after its surrounding transaction
+// commits successfully.
+func (s *TaskService) EnqueueTaskForMentionWithQueries(ctx context.Context, q *db.Queries, issue db.Issue, agentID, triggerCommentID pgtype.UUID) (db.AgentTaskQueue, error) {
+	clone := *s
+	clone.Queries = q
+	clone.Hub = nil
+	clone.Bus = nil
+	clone.Wakeup = nil
+	clone.Metrics = nil
+	clone.Composio = nil
+	return clone.EnqueueTaskForMention(ctx, issue, agentID, triggerCommentID)
+}
+
+// PublishTaskQueued emits the post-commit task event and daemon wakeup for a
+// task created by EnqueueTaskForMentionWithQueries.
+func (s *TaskService) PublishTaskQueued(ctx context.Context, task db.AgentTaskQueue) {
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
+}
+
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
 // the direct parent comment a member replied to.
 func (s *TaskService) EnqueueTaskForThreadParent(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID) (db.AgentTaskQueue, error) {
@@ -4625,6 +4647,9 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 }
 
 func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue) {
+	if s == nil || s.Bus == nil {
+		return
+	}
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
 	if workspaceID == "" {
 		return

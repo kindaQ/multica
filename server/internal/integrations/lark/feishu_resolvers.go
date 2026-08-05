@@ -11,6 +11,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // This file is the Feishu ResolverSet: the platform-specific implementations
@@ -48,6 +49,7 @@ func NewFeishuResolverSet(store *ChannelStore, session *engine.ChatSession, audi
 	set := engine.ResolverSet{
 		Installation: &feishuInstallationResolver{store: store},
 		Identity:     &feishuIdentityResolver{store: store},
+		Route:        NewRouteResolver(store),
 		Dedup:        &feishuDeduper{store: store},
 		Session:      &feishuSessionBinder{session: session},
 		Audit:        &feishuAuditor{audit: audit},
@@ -81,10 +83,23 @@ func (r *feishuInstallationResolver) ResolveInstallation(ctx context.Context, ms
 		}
 		return engine.ResolvedInstallation{}, err
 	}
+	agentID := inst.AgentID
+	if inst.TargetType == string(InstallationTargetSquad) {
+		squad, squadErr := r.store.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
+			ID:          inst.TargetID,
+			WorkspaceID: inst.WorkspaceID,
+		})
+		if squadErr != nil || squad.ArchivedAt.Valid {
+			return engine.ResolvedInstallation{}, engine.ErrInstallationNotFound
+		}
+		agentID = squad.LeaderID
+	}
 	return engine.ResolvedInstallation{
 		ID:              inst.ID,
 		WorkspaceID:     inst.WorkspaceID,
-		AgentID:         inst.AgentID,
+		AgentID:         agentID,
+		TargetType:      inst.TargetType,
+		TargetID:        inst.TargetID,
 		InstallerUserID: inst.InstallerUserID,
 		Active:          InstallationStatus(inst.Status) == InstallationActive,
 		Platform:        inst,
@@ -180,17 +195,21 @@ type larkBindingConfig struct {
 // "chat:thread" — so two @bot topics in one group are two sessions (the same
 // model as Slack's channel:threadRoot; see engine.EnsureSessionInput). Pure
 // function so the isolation contract is unit-tested without a DB.
-func larkSessionRouting(msg channel.InboundMessage) (bindingKey string, config []byte) {
+func larkSessionRouting(msg channel.InboundMessage, agentID pgtype.UUID) (bindingKey string, config []byte) {
 	chatID := msg.Source.ChatID
-	if msg.Source.ChatType != channel.ChatTypeGroup || msg.Source.ThreadID == "" {
-		return chatID, nil
-	}
 	cfg, _ := json.Marshal(larkBindingConfig{ChatID: chatID})
-	return chatID + ":" + msg.Source.ThreadID, cfg
+	key := chatID
+	if msg.Source.ChatType == channel.ChatTypeGroup && msg.Source.ThreadID != "" {
+		key += ":" + msg.Source.ThreadID
+	}
+	// Legacy rows have UNIQUE (installation_id, channel_chat_id). Include the
+	// actual target agent in the opaque binding key so squad members can own
+	// independent sessions without rewriting that historical constraint.
+	return key + ":agent:" + uuidString(agentID), cfg
 }
 
 func (r *feishuSessionBinder) EnsureSession(ctx context.Context, p engine.EnsureSessionParams) (pgtype.UUID, error) {
-	bindingKey, config := larkSessionRouting(p.Message)
+	bindingKey, config := larkSessionRouting(p.Message, p.Installation.AgentID)
 	return r.session.EnsureSession(ctx, engine.EnsureSessionInput{
 		WorkspaceID:    p.Installation.WorkspaceID,
 		AgentID:        p.Installation.AgentID,
@@ -216,6 +235,7 @@ func (r *feishuSessionBinder) AppendMessage(ctx context.Context, p engine.Append
 		MessageID:           p.Message.MessageID,
 		ThreadID:            p.Message.Source.ThreadID,
 		ClaimToken:          p.ClaimToken,
+		RouteContextID:      p.RouteContextID,
 		MediaPendingSeconds: p.MediaPendingSeconds,
 	})
 }
@@ -275,6 +295,7 @@ func dispatchResultFromEngine(res engine.Result) DispatchResult {
 		IssueIdentifier: res.IssueIdentifier,
 		IssueTitle:      res.IssueTitle,
 		IssueDuplicate:  res.IssueDuplicate,
+		Message:         res.Message,
 	}
 }
 

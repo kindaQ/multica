@@ -263,6 +263,24 @@ deleted_channel_inbound_audit AS (
     DELETE FROM channel_inbound_audit
     WHERE installation_id IN (SELECT id FROM ws_channel_installations)
 ),
+deleted_channel_route_contexts AS (
+    DELETE FROM channel_route_context
+    WHERE workspace_id = $1
+       OR installation_id IN (SELECT id FROM ws_channel_installations)
+),
+deleted_channel_delivery_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (
+        SELECT id FROM channel_delivery
+        WHERE workspace_id = $1
+           OR installation_id IN (SELECT id FROM ws_channel_installations)
+    )
+),
+deleted_channel_deliveries AS (
+    DELETE FROM channel_delivery
+    WHERE workspace_id = $1
+       OR installation_id IN (SELECT id FROM ws_channel_installations)
+),
 deleted_channel_user_bindings AS (
     DELETE FROM channel_user_binding WHERE workspace_id = $1
 ),

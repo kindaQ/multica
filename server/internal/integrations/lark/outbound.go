@@ -153,6 +153,19 @@ type PatcherQueries interface {
 	UpdateLarkOutboundCardStatus(ctx context.Context, arg UpdateOutboundCardStatusParams) error
 }
 
+// deliveryQueries is optional so older embedders and focused unit-test fakes
+// keep the chat-only contract. The production ChannelStore implements it via
+// its embedded generated queries.
+type deliveryQueries interface {
+	GetOrCreateChannelDelivery(context.Context, db.GetOrCreateChannelDeliveryParams) (db.GetOrCreateChannelDeliveryRow, error)
+	ListChannelDeliveriesByTask(context.Context, pgtype.UUID) ([]db.ChannelDelivery, error)
+	ListChannelDeliveryMessages(context.Context, pgtype.UUID) ([]db.ChannelDeliveryMessage, error)
+	CreateChannelDeliveryMessage(context.Context, db.CreateChannelDeliveryMessageParams) (db.ChannelDeliveryMessage, error)
+	MarkChannelDeliveryMessageSent(context.Context, db.MarkChannelDeliveryMessageSentParams) (int64, error)
+	MarkChannelDeliveryMessageFailed(context.Context, db.MarkChannelDeliveryMessageFailedParams) (int64, error)
+	SetChannelDeliveryStatus(context.Context, db.SetChannelDeliveryStatusParams) (int64, error)
+}
+
 // CredentialsResolver decrypts an installation's app_secret for the
 // transport layer. *InstallationService satisfies it directly; tests
 // substitute a fake.
@@ -261,6 +274,9 @@ func (p *Patcher) SetTypingIndicatorManager(m *TypingIndicatorManager) {
 // EventTaskCompleted payload would wipe the real reply.
 func (p *Patcher) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventTaskFailed, p.handleEvent)
+	bus.Subscribe(protocol.EventTaskCancelled, p.handleEvent)
+	bus.Subscribe(protocol.EventTaskCompleted, p.handleEvent)
+	bus.Subscribe(protocol.EventCommentCreated, p.handleEvent)
 	bus.Subscribe(protocol.EventChatDone, p.handleEvent)
 }
 
@@ -281,13 +297,15 @@ func (p *Patcher) handleEvent(e events.Event) {
 }
 
 func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
+	if e.Type == protocol.EventCommentCreated {
+		return p.processIssueComment(ctx, e)
+	}
 	taskID, chatSessionID, ok := taskAndSessionFromEvent(e)
 	if !ok {
 		return nil
 	}
 	if !chatSessionID.Valid {
-		// Issue / autopilot tasks have no chat_session.
-		return nil
+		return p.processIssueTerminal(ctx, taskID, e)
 	}
 	binding, err := p.queries.GetLarkChatSessionBindingBySession(ctx, chatSessionID)
 	if err != nil {
@@ -344,9 +362,209 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 
 	switch e.Type {
 	case protocol.EventChatDone:
+		if dq, ok := p.queries.(deliveryQueries); ok {
+			content := chatDoneContent(e.Payload)
+			if content == "" {
+				return nil
+			}
+			delivery, deliveryErr := p.ensureChatDelivery(ctx, dq, inst, binding, taskID)
+			if deliveryErr != nil {
+				return deliveryErr
+			}
+			return p.sendDeliveryMessage(ctx, dq, delivery, pgtype.UUID{}, "chat:done", content)
+		}
 		return p.sendChatReply(ctx, creds, binding, e.Payload)
 	case protocol.EventTaskFailed:
 		return p.fail(ctx, creds, binding, taskID, agentName, e.Payload)
+	}
+	return nil
+}
+
+func (p *Patcher) ensureChatDelivery(ctx context.Context, dq deliveryQueries, inst Installation, binding ChatSessionBinding, taskID pgtype.UUID) (db.ChannelDelivery, error) {
+	row, err := dq.GetOrCreateChannelDelivery(ctx, db.GetOrCreateChannelDeliveryParams{
+		WorkspaceID: inst.WorkspaceID, InstallationID: inst.ID, ChannelType: channelTypeFeishu,
+		Kind: "conversation_reply", RouteType: "chat", ReplyPolicy: "chat_route",
+		TaskID: taskID, ChatSessionID: binding.ChatSessionID, AgentID: binding.AgentID,
+		DestinationChatID:   textOrNull(string(outboundChatID(binding))),
+		DestinationThreadID: binding.LastThreadID, DestinationMessageID: binding.LastMessageID,
+	})
+	if err != nil {
+		return db.ChannelDelivery{}, fmt.Errorf("get or create chat delivery: %w", err)
+	}
+	return channelDeliveryFromGetOrCreate(row), nil
+}
+
+func channelDeliveryFromGetOrCreate(row db.GetOrCreateChannelDeliveryRow) db.ChannelDelivery {
+	return db.ChannelDelivery{
+		ID: row.ID, WorkspaceID: row.WorkspaceID, InstallationID: row.InstallationID,
+		ChannelType: row.ChannelType, Kind: row.Kind, RouteType: row.RouteType,
+		ReplyPolicy: row.ReplyPolicy, TaskID: row.TaskID, ChatSessionID: row.ChatSessionID,
+		IssueID: row.IssueID, AgentID: row.AgentID, SourceUserID: row.SourceUserID,
+		DestinationChannelUserID: row.DestinationChannelUserID,
+		DestinationChatID:        row.DestinationChatID, DestinationThreadID: row.DestinationThreadID,
+		DestinationMessageID: row.DestinationMessageID, Status: row.Status,
+		LeaseToken: row.LeaseToken, LeaseExpiresAt: row.LeaseExpiresAt,
+		AttemptCount: row.AttemptCount, NextAttemptAt: row.NextAttemptAt,
+		TerminalReason: row.TerminalReason, LastError: row.LastError,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+func (p *Patcher) processIssueComment(ctx context.Context, e events.Event) error {
+	dq, ok := p.queries.(deliveryQueries)
+	if !ok {
+		return nil
+	}
+	comment, ok := commentDeliveryPayload(e.Payload)
+	if !ok || comment.authorType != "agent" || comment.commentType != "comment" || !comment.taskID.Valid {
+		return nil
+	}
+	deliveries, err := dq.ListChannelDeliveriesByTask(ctx, comment.taskID)
+	if err != nil {
+		return fmt.Errorf("list issue deliveries: %w", err)
+	}
+	for _, delivery := range deliveries {
+		if delivery.RouteType != "issue" || delivery.Status == "cancelled" {
+			continue
+		}
+		if err := p.sendDeliveryMessage(ctx, dq, delivery, comment.id, "comment:"+uuidString(comment.id), comment.content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Patcher) processIssueTerminal(ctx context.Context, taskID pgtype.UUID, e events.Event) error {
+	dq, ok := p.queries.(deliveryQueries)
+	if !ok {
+		return nil
+	}
+	deliveries, err := dq.ListChannelDeliveriesByTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("list terminal deliveries: %w", err)
+	}
+	for _, delivery := range deliveries {
+		if delivery.RouteType != "issue" || delivery.Status == "cancelled" {
+			continue
+		}
+		status, reason := "sent", "completed"
+		var terminalText string
+		switch e.Type {
+		case protocol.EventTaskFailed:
+			status, reason, terminalText = "failed", "failed", "智能体执行失败，请稍后重试。"
+		case protocol.EventTaskCancelled:
+			status, reason, terminalText = "cancelled", "cancelled", "该任务已取消。"
+		case protocol.EventTaskCompleted:
+			messages, listErr := dq.ListChannelDeliveryMessages(ctx, delivery.ID)
+			if listErr != nil {
+				return fmt.Errorf("list delivery messages: %w", listErr)
+			}
+			hasOutput := false
+			for _, message := range messages {
+				hasOutput = hasOutput || message.Status == "sent"
+			}
+			if !hasOutput {
+				terminalText = "智能体已完成任务，但没有产生可见回复。"
+			}
+		default:
+			continue
+		}
+		if terminalText != "" {
+			if err := p.sendDeliveryMessage(ctx, dq, delivery, pgtype.UUID{}, "terminal:"+reason, terminalText); err != nil {
+				return err
+			}
+		}
+		_, err = dq.SetChannelDeliveryStatus(ctx, db.SetChannelDeliveryStatusParams{
+			ID: delivery.ID, Status: status, TerminalReason: textOrNull(reason),
+		})
+		if err != nil {
+			return fmt.Errorf("set delivery terminal status: %w", err)
+		}
+	}
+	return nil
+}
+
+type deliveryComment struct {
+	id          pgtype.UUID
+	taskID      pgtype.UUID
+	authorType  string
+	commentType string
+	content     string
+}
+
+func commentDeliveryPayload(payload any) (deliveryComment, bool) {
+	root, ok := payload.(map[string]any)
+	if !ok {
+		return deliveryComment{}, false
+	}
+	comment, ok := root["comment"].(map[string]any)
+	if !ok {
+		return deliveryComment{}, false
+	}
+	var out deliveryComment
+	_ = out.id.Scan(stringValue(comment["id"]))
+	_ = out.taskID.Scan(stringValue(comment["source_task_id"]))
+	out.authorType = stringValue(comment["author_type"])
+	out.commentType = stringValue(comment["type"])
+	out.content = stringValue(comment["content"])
+	return out, out.id.Valid && out.content != ""
+}
+
+func stringValue(v any) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	case *string:
+		if value != nil {
+			return *value
+		}
+	}
+	return ""
+}
+
+func (p *Patcher) sendDeliveryMessage(ctx context.Context, dq deliveryQueries, delivery db.ChannelDelivery, commentID pgtype.UUID, key, content string) error {
+	message, err := dq.CreateChannelDeliveryMessage(ctx, db.CreateChannelDeliveryMessageParams{
+		DeliveryID: delivery.ID, SourceCommentID: commentID, IdempotencyKey: key,
+	})
+	if err != nil {
+		return fmt.Errorf("create delivery message: %w", err)
+	}
+	if message.Status == "sent" {
+		return nil
+	}
+	inst, err := p.queries.GetLarkInstallation(ctx, delivery.InstallationID)
+	if err != nil {
+		return fmt.Errorf("load delivery installation: %w", err)
+	}
+	if InstallationStatus(inst.Status) != InstallationActive {
+		return nil
+	}
+	creds, err := p.installationCredentials(inst)
+	if err != nil {
+		return err
+	}
+	target := ReplyTarget{}
+	if delivery.DestinationMessageID.Valid && delivery.DestinationThreadID.Valid {
+		target = ReplyTarget{MessageID: delivery.DestinationMessageID.String, InThread: true}
+	}
+	var sentID string
+	send := func(t ReplyTarget) error {
+		if containsMarkdown(content) {
+			sentID, err = p.client.SendMarkdownCard(ctx, SendMarkdownCardParams{InstallationID: creds, ChatID: ChatID(delivery.DestinationChatID.String), Markdown: content, ReplyTarget: t})
+		} else {
+			sentID, err = p.client.SendTextMessage(ctx, SendTextParams{InstallationID: creds, ChatID: ChatID(delivery.DestinationChatID.String), Text: content, ReplyTarget: t})
+		}
+		return err
+	}
+	if err := sendWithThreadFallback(p.cfg.Logger, "send routed delivery", target, send); err != nil {
+		_, _ = dq.MarkChannelDeliveryMessageFailed(ctx, db.MarkChannelDeliveryMessageFailedParams{ID: message.ID, LastError: textOrNull("send_failed")})
+		return err
+	}
+	if sentID == "" {
+		return errors.New("lark delivery send returned an empty message id")
+	}
+	if _, err := dq.MarkChannelDeliveryMessageSent(ctx, db.MarkChannelDeliveryMessageSentParams{ID: message.ID, ChannelMessageID: textOrNull(sentID)}); err != nil {
+		return fmt.Errorf("persist delivery message id: %w", err)
 	}
 	return nil
 }

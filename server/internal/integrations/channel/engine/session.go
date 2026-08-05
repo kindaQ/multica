@@ -101,6 +101,9 @@ func (a dbSessionQueries) UpdateChannelChatSessionBindingReplyTarget(ctx context
 func (a dbSessionQueries) MarkChannelInboundDedupProcessed(ctx context.Context, arg db.MarkChannelInboundDedupProcessedParams) (int64, error) {
 	return a.q.MarkChannelInboundDedupProcessed(ctx, arg)
 }
+func (a dbSessionQueries) ConsumeChannelRouteContext(ctx context.Context, id pgtype.UUID) (db.ChannelRouteContext, error) {
+	return a.q.ConsumeChannelRouteContext(ctx, id)
+}
 
 // SessionTitles are the per-platform display titles a freshly created
 // chat_session gets (the first message has not been appended yet, so the title
@@ -173,13 +176,18 @@ type EnsureSessionInput struct {
 	ChatType       channel.ChatType
 }
 
-// EnsureSession returns the chat_session.id bound to (installation, BindingKey),
+// EnsureSession returns the chat_session.id bound to (installation, BindingKey,
+// agent),
 // creating it (with its channel_chat_session_binding) on first contact. The
 // race between two concurrent first messages is resolved by the
 // UNIQUE (installation_id, channel_chat_id) constraint: the loser re-reads the
 // winner's row.
 func (s *ChatSession) EnsureSession(ctx context.Context, in EnsureSessionInput) (pgtype.UUID, error) {
-	lookup := db.GetChannelChatSessionBindingParams{InstallationID: in.InstallationID, ChannelChatID: in.BindingKey}
+	lookup := db.GetChannelChatSessionBindingParams{
+		InstallationID: in.InstallationID,
+		ChannelChatID:  in.BindingKey,
+		AgentID:        in.AgentID,
+	}
 
 	existing, err := s.q.GetChannelChatSessionBinding(ctx, lookup)
 	if err == nil {
@@ -238,6 +246,7 @@ func (s *ChatSession) createSessionAndBinding(ctx context.Context, in EnsureSess
 		ChannelChatID:  in.BindingKey,
 		ChatType:       string(in.ChatType),
 		Config:         bindingConfig,
+		AgentID:        in.AgentID,
 	}); err != nil {
 		return pgtype.UUID{}, err
 	}
@@ -267,6 +276,7 @@ type AppendInput struct {
 	MessageID           string
 	ThreadID            string
 	ClaimToken          pgtype.UUID
+	RouteContextID      pgtype.UUID
 	MediaPendingSeconds float64
 }
 
@@ -362,6 +372,17 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 			return AppendResult{}, ErrClaimLost
 		}
 		markedInTx = true
+	}
+	if in.RouteContextID.Valid {
+		consumer, ok := qtx.(interface {
+			ConsumeChannelRouteContext(context.Context, pgtype.UUID) (db.ChannelRouteContext, error)
+		})
+		if !ok {
+			return AppendResult{}, errors.New("consume route context: query implementation does not support route contexts")
+		}
+		if _, err := consumer.ConsumeChannelRouteContext(ctx, in.RouteContextID); err != nil {
+			return AppendResult{}, fmt.Errorf("consume route context: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

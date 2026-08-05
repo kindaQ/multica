@@ -19,6 +19,8 @@ type GetInstallationInWorkspaceParams struct {
 type UpsertInstallationParams struct {
 	WorkspaceID        pgtype.UUID
 	AgentID            pgtype.UUID
+	TargetType         string
+	TargetID           pgtype.UUID
 	AppID              string
 	AppSecretEncrypted []byte
 	BotOpenID          string

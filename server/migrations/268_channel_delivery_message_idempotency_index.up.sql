@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY channel_delivery_message_idempotency_uidx ON channel_delivery_message (delivery_id, idempotency_key);

@@ -3,11 +3,13 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -22,7 +24,11 @@ import (
 type LarkInstallationResponse struct {
 	ID              string  `json:"id"`
 	WorkspaceID     string  `json:"workspace_id"`
-	AgentID         string  `json:"agent_id"`
+	AgentID         string  `json:"agent_id,omitempty"`
+	TargetType      string  `json:"target_type"`
+	TargetID        string  `json:"target_id"`
+	TargetName      string  `json:"target_name,omitempty"`
+	CurrentLeaderID string  `json:"current_leader_id,omitempty"`
 	AppID           string  `json:"app_id"`
 	TenantKey       *string `json:"tenant_key,omitempty"`
 	BotOpenID       string  `json:"bot_open_id"`
@@ -42,6 +48,8 @@ func larkInstallationToResponse(row lark.Installation) LarkInstallationResponse 
 		ID:              uuidToString(row.ID),
 		WorkspaceID:     uuidToString(row.WorkspaceID),
 		AgentID:         uuidToString(row.AgentID),
+		TargetType:      row.TargetType,
+		TargetID:        uuidToString(row.TargetID),
 		AppID:           row.AppID,
 		BotOpenID:       row.BotOpenID,
 		InstallerUserID: uuidToString(row.InstallerUserID),
@@ -97,7 +105,18 @@ func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) 
 	}
 	out := make([]LarkInstallationResponse, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, larkInstallationToResponse(row))
+		item := larkInstallationToResponse(row)
+		if row.TargetType == string(lark.InstallationTargetSquad) {
+			if squad, loadErr := h.Queries.GetSquadInWorkspace(r.Context(), db.GetSquadInWorkspaceParams{ID: row.TargetID, WorkspaceID: wsUUID}); loadErr == nil {
+				item.TargetName = squad.Name
+				item.CurrentLeaderID = uuidToString(squad.LeaderID)
+			}
+		} else if row.AgentID.Valid {
+			if agent, loadErr := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: row.AgentID, WorkspaceID: wsUUID}); loadErr == nil {
+				item.TargetName = agent.Name
+			}
+		}
+		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installations":     out,
@@ -155,16 +174,35 @@ func (h *Handler) RevokeLarkInstallation(w http.ResponseWriter, r *http.Request)
 	// the disconnect entry point (see ListByWorkspace vs the orphan-
 	// filtered active list). No FK/cascade: the missing agent is handled
 	// in the application layer.
-	agent, agentErr := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
-		ID:          inst.AgentID,
-		WorkspaceID: wsUUID,
-	})
-	if agentErr != nil {
-		if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "lark installation not found", "owner", "admin"); !ok {
+	switch lark.InstallationTargetType(inst.TargetType) {
+	case lark.InstallationTargetSquad:
+		squad, squadErr := h.Queries.GetSquadInWorkspace(r.Context(), db.GetSquadInWorkspaceParams{
+			ID:          inst.TargetID,
+			WorkspaceID: wsUUID,
+		})
+		if squadErr != nil {
+			if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "lark installation not found", "owner", "admin"); !ok {
+				return
+			}
+		} else {
+			member, memberErr := h.getWorkspaceMember(r.Context(), userID, uuidToString(wsUUID))
+			if memberErr != nil || !canManageSquad(member, squad) {
+				writeError(w, http.StatusForbidden, "not allowed to manage this squad")
+				return
+			}
+		}
+	default:
+		agent, agentErr := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+			ID:          inst.AgentID,
+			WorkspaceID: wsUUID,
+		})
+		if agentErr != nil {
+			if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "lark installation not found", "owner", "admin"); !ok {
+				return
+			}
+		} else if !h.canManageAgent(w, r, agent) {
 			return
 		}
-	} else if !h.canManageAgent(w, r, agent) {
-		return
 	}
 	if err := h.LarkInstallations.Revoke(r.Context(), instUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to revoke installation")
@@ -288,12 +326,19 @@ func (h *Handler) BeginLarkInstall(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	agentIDStr := strings.TrimSpace(r.URL.Query().Get("agent_id"))
-	if agentIDStr == "" {
-		writeError(w, http.StatusBadRequest, "agent_id is required")
+	targetType := lark.InstallationTargetType(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target_type"))))
+	if targetType == "" {
+		targetType = lark.InstallationTargetAgent
+	}
+	targetIDStr := strings.TrimSpace(r.URL.Query().Get("target_id"))
+	if targetIDStr == "" && targetType == lark.InstallationTargetAgent {
+		targetIDStr = strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	}
+	if targetIDStr == "" {
+		writeError(w, http.StatusBadRequest, "target_id is required")
 		return
 	}
-	agentUUID, ok := parseUUIDOrBadRequest(w, agentIDStr, "agent_id")
+	targetUUID, ok := parseUUIDOrBadRequest(w, targetIDStr, "target_id")
 	if !ok {
 		return
 	}
@@ -320,19 +365,37 @@ func (h *Handler) BeginLarkInstall(w http.ResponseWriter, r *http.Request) {
 	// Ownership pre-check at the HTTP boundary so a malformed
 	// agent_id surfaces 404 here (not an opaque service error from
 	// inside the service's own re-check).
-	agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
-		ID:          agentUUID,
-		WorkspaceID: wsUUID,
-	})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "agent not found in this workspace")
-		return
-	}
-	// Authorize the initiator against the target agent: its owner or a
-	// workspace owner/admin may bind. canManageAgent writes the 403/404
-	// itself, so a member who is neither is stopped here rather than at
-	// the (now member-level) router.
-	if !h.canManageAgent(w, r, agent) {
+	var agentUUID pgtype.UUID
+	switch targetType {
+	case lark.InstallationTargetAgent:
+		agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+			ID:          targetUUID,
+			WorkspaceID: wsUUID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "agent not found in this workspace")
+			return
+		}
+		if !h.canManageAgent(w, r, agent) {
+			return
+		}
+		agentUUID = targetUUID
+	case lark.InstallationTargetSquad:
+		squad, err := h.Queries.GetSquadInWorkspace(r.Context(), db.GetSquadInWorkspaceParams{
+			ID:          targetUUID,
+			WorkspaceID: wsUUID,
+		})
+		if err != nil || squad.ArchivedAt.Valid {
+			writeError(w, http.StatusNotFound, "squad not found in this workspace")
+			return
+		}
+		member, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(wsUUID))
+		if err != nil || !canManageSquad(member, squad) {
+			writeError(w, http.StatusForbidden, "not allowed to manage this squad")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "target_type must be 'agent' or 'squad'")
 		return
 	}
 	initiatorUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
@@ -343,6 +406,8 @@ func (h *Handler) BeginLarkInstall(w http.ResponseWriter, r *http.Request) {
 	res, err := h.LarkRegistration.BeginInstall(r.Context(), lark.BeginInstallParams{
 		WorkspaceID: wsUUID,
 		AgentID:     agentUUID,
+		TargetType:  targetType,
+		TargetID:    targetUUID,
 		InitiatorID: initiatorUUID,
 		Region:      lark.Region(regionParam),
 	})
@@ -435,4 +500,71 @@ func (h *Handler) GetLarkInstallStatus(w http.ResponseWriter, r *http.Request) {
 		// polls this status endpoint to success.
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type createLarkDeliveryRequest struct {
+	InstallationID string `json:"installation_id"`
+	IssueID        string `json:"issue_id,omitempty"`
+	Content        string `json:"content"`
+	IdempotencyKey string `json:"idempotency_key"`
+	ReplyPolicy    string `json:"reply_policy,omitempty"`
+}
+
+// CreateLarkDelivery is intentionally agent-authenticated: resolveActor only
+// accepts a task-token identity or a verified X-Agent-ID/X-Task-ID pair. The
+// service then applies the workspace and squad boundary again before sending.
+func (h *Handler) CreateLarkDelivery(w http.ResponseWriter, r *http.Request) {
+	if h.LarkDelivery == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark delivery not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := chi.URLParam(r, "id")
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if actorType != "agent" {
+		writeError(w, http.StatusForbidden, "only an authenticated agent task can push a Feishu message")
+		return
+	}
+	agentID := parseUUID(actorID)
+	if !agentID.Valid {
+		writeError(w, http.StatusBadRequest, "invalid agent id")
+		return
+	}
+	var body createLarkDeliveryRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	installationID, ok := parseUUIDOrBadRequest(w, body.InstallationID, "installation id")
+	if !ok {
+		return
+	}
+	var issueID pgtype.UUID
+	if strings.TrimSpace(body.IssueID) != "" {
+		issueID, ok = parseUUIDOrBadRequest(w, body.IssueID, "issue id")
+		if !ok {
+			return
+		}
+	}
+	result, err := h.LarkDelivery.Push(r.Context(), lark.ProactivePushParams{
+		WorkspaceID: workspaceUUID, InstallationID: installationID, AgentID: agentID,
+		IssueID: issueID, Content: body.Content, IdempotencyKey: body.IdempotencyKey,
+		ReplyPolicy: body.ReplyPolicy,
+	})
+	if err != nil {
+		slog.Warn("lark proactive delivery rejected", "workspace_id", workspaceID, "agent_id", actorID, "error", err)
+		writeError(w, http.StatusBadRequest, "Feishu delivery was rejected by workspace or squad policy")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"delivery_id": uuidToString(result.DeliveryID), "message_id": result.MessageID,
+		"duplicate": result.Duplicate,
+	})
 }

@@ -357,6 +357,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// backfills) take it directly; the constructor-based services
 				// wrap *db.Queries internally, so they keep taking queries.
 				cs := lark.NewChannelStore(queries)
+				h.LarkDelivery = lark.NewDeliveryService(queries, cs, installSvc, larkClient)
 				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
 				patcher.Register(bus)
 
@@ -425,9 +426,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					Logger:      slog.Default(),
 				})
 				mediaResolver := lark.NewFeishuMediaResolver(larkClient, installSvc, store, engine.NewDBMediaIntentLedger(queries), slog.Default())
-				channelRouter.Register(channel.TypeFeishu, lark.NewFeishuResolverSet(
+				feishuResolvers := lark.NewFeishuResolverSet(
 					cs, feishuSession, auditLogger, resolverReplier, typingIndicator, mediaResolver,
-				))
+				)
+				feishuResolvers.Issue = lark.NewIssueIngester(queries, pool, h.TaskService, bus)
+				channelRouter.Register(channel.TypeFeishu, feishuResolvers)
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
 				// One-shot union_id backfill for installations created
@@ -1015,6 +1018,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// terminal failure.
 					r.Post("/lark/install/begin", h.BeginLarkInstall)
 					r.Get("/lark/install/{sessionId}/status", h.GetLarkInstallStatus)
+					r.Post("/lark/deliveries", h.CreateLarkDelivery)
 				})
 
 				// Slack integration (MUL-3666). Same admin/member split as

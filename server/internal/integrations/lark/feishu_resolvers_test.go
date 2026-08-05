@@ -54,11 +54,12 @@ func TestFeishuSessionBinder_EnsureSessionMapping(t *testing.T) {
 	}
 
 	got := f.ensureIn
-	if got.BindingKey != "oc_chat" {
-		t.Errorf("BindingKey = %q, want the chat id (plain group: one session per chat)", got.BindingKey)
+	if got.BindingKey != "oc_chat:agent:"+uuidString(binderUUID(3)) {
+		t.Errorf("BindingKey = %q, want chat+agent isolation", got.BindingKey)
 	}
-	if len(got.BindingConfig) != 0 {
-		t.Errorf("plain group must not set BindingConfig (chat id is the real chat): %q", got.BindingConfig)
+	var cfg larkBindingConfig
+	if err := json.Unmarshal(got.BindingConfig, &cfg); err != nil || cfg.ChatID != "oc_chat" {
+		t.Errorf("plain group config must retain the real chat id: %q", got.BindingConfig)
 	}
 	if got.WorkspaceID != binderUUID(2) || got.AgentID != binderUUID(3) || got.InstallationID != binderUUID(1) ||
 		got.Sender != binderUUID(7) || got.ChatType != channel.ChatTypeGroup {
@@ -86,7 +87,7 @@ func TestFeishuSessionBinder_TopicMessageIsolatesByThread(t *testing.T) {
 	}
 
 	got := f.ensureIn
-	if got.BindingKey != "oc_chat:omt_topic1" {
+	if got.BindingKey != "oc_chat:omt_topic1:agent:"+uuidString(binderUUID(3)) {
 		t.Errorf("BindingKey = %q, want chat:thread composite (topic isolation)", got.BindingKey)
 	}
 	var cfg larkBindingConfig
@@ -103,17 +104,18 @@ func TestLarkSessionRouting(t *testing.T) {
 		wantKey    string
 		wantConfig bool
 	}{
-		{"p2p", channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P}, "oc_dm", false},
+		{"p2p", channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P}, "oc_dm", true},
 		// p2p never has topics; a stray thread id must not split the DM session.
-		{"p2p with stray thread", channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P, ThreadID: "omt_x"}, "oc_dm", false},
-		{"plain group", channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup}, "oc_g", false},
+		{"p2p with stray thread", channel.Source{ChatID: "oc_dm", ChatType: channel.ChatTypeP2P, ThreadID: "omt_x"}, "oc_dm", true},
+		{"plain group", channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup}, "oc_g", true},
 		{"topic group", channel.Source{ChatID: "oc_g", ChatType: channel.ChatTypeGroup, ThreadID: "omt_1"}, "oc_g:omt_1", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			key, config := larkSessionRouting(channel.InboundMessage{Source: tc.src})
-			if key != tc.wantKey {
-				t.Errorf("bindingKey = %q, want %q", key, tc.wantKey)
+			key, config := larkSessionRouting(channel.InboundMessage{Source: tc.src}, binderUUID(2))
+			wantKey := tc.wantKey + ":agent:" + uuidString(binderUUID(2))
+			if key != wantKey {
+				t.Errorf("bindingKey = %q, want %q", key, wantKey)
 			}
 			if tc.wantConfig != (len(config) > 0) {
 				t.Errorf("config presence = %v, want %v (%q)", len(config) > 0, tc.wantConfig, config)

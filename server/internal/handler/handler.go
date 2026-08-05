@@ -218,6 +218,7 @@ type Handler struct {
 	// UI consults IsConfigured() to decide whether to surface install
 	// entry points.
 	LarkAPIClient lark.APIClient
+	LarkDelivery  *lark.DeliveryService
 	// Composio integration (MUL-3720). Nil when COMPOSIO_API_KEY is unset;
 	// the composio HTTP handlers return 503 in that case. Wired in
 	// cmd/server/router.go after handler.New.

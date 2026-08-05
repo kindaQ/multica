@@ -1,0 +1,1 @@
+ALTER TABLE channel_route_context ADD CONSTRAINT channel_route_context_pkey PRIMARY KEY USING INDEX channel_route_context_id_uidx;

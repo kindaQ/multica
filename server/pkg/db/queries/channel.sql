@@ -25,12 +25,33 @@
 -- without one install clobbering another. The WS lease is intentionally NOT
 -- reset here — the inbound hub owns lease lifecycle.
 INSERT INTO channel_installation (
-    workspace_id, agent_id, channel_type, config, installer_user_id
+    workspace_id, agent_id, target_type, target_id, channel_type, config, installer_user_id
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, 'agent', $2, $3, $4, $5
 )
-ON CONFLICT (workspace_id, agent_id, channel_type) DO UPDATE SET
+ON CONFLICT (workspace_id, target_type, target_id, channel_type) DO UPDATE SET
+    agent_id          = EXCLUDED.agent_id,
     channel_type      = EXCLUDED.channel_type,
+    config            = EXCLUDED.config,
+    installer_user_id = EXCLUDED.installer_user_id,
+    status            = 'active',
+    installed_at      = now(),
+    updated_at        = now()
+RETURNING *;
+
+-- name: UpsertChannelInstallationTarget :one
+-- Squad-aware install path. Agent targets keep agent_id populated for backward
+-- compatibility; squad targets keep it NULL so the current leader is resolved
+-- at message time rather than snapshotted at installation time.
+INSERT INTO channel_installation (
+    workspace_id, agent_id, target_type, target_id, channel_type, config, installer_user_id
+) VALUES (
+    sqlc.arg('workspace_id'), sqlc.narg('agent_id'), sqlc.arg('target_type'),
+    sqlc.arg('target_id'), sqlc.arg('channel_type'), sqlc.arg('config'),
+    sqlc.arg('installer_user_id')
+)
+ON CONFLICT (workspace_id, target_type, target_id, channel_type) DO UPDATE SET
+    agent_id          = EXCLUDED.agent_id,
     config            = EXCLUDED.config,
     installer_user_id = EXCLUDED.installer_user_id,
     status            = 'active',
@@ -59,9 +80,9 @@ RETURNING *;
 -- the same workspace still trips the (workspace_id, agent_id, channel_type)
 -- unique constraint — a genuine conflict the OAuth callback turns into a redirect.
 INSERT INTO channel_installation (
-    workspace_id, agent_id, channel_type, config, installer_user_id
+    workspace_id, agent_id, target_type, target_id, channel_type, config, installer_user_id
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, 'agent', $2, $3, $4, $5
 )
 ON CONFLICT (channel_type, (config ->> 'app_id')) DO UPDATE SET
     agent_id          = EXCLUDED.agent_id,
@@ -111,7 +132,7 @@ WHERE channel_type = sqlc.arg('channel_type')
 -- reads agent_archived_at.Valid to tell an archived (reversible) owner apart.
 SELECT ci.workspace_id, ci.agent_id, a.archived_at AS agent_archived_at
 FROM channel_installation ci
-JOIN agent a ON a.id = ci.agent_id
+LEFT JOIN agent a ON ci.target_type = 'agent' AND a.id = ci.agent_id
 WHERE ci.channel_type = sqlc.arg('channel_type')
   AND ci.config ->> 'app_id' = sqlc.arg('app_id')::text;
 
@@ -159,7 +180,8 @@ WITH dead AS (
                 AND NOT (ci.workspace_id = sqlc.arg('workspace_id')
                          AND ci.agent_id = sqlc.arg('agent_id')))
          OR NOT EXISTS (SELECT 1 FROM workspace w WHERE w.id = ci.workspace_id)
-         OR NOT EXISTS (SELECT 1 FROM agent a WHERE a.id = ci.agent_id)
+         OR (ci.target_type = 'agent' AND NOT EXISTS (SELECT 1 FROM agent a WHERE a.id = ci.target_id))
+         OR (ci.target_type = 'squad' AND NOT EXISTS (SELECT 1 FROM squad s WHERE s.id = ci.target_id))
       )
     RETURNING ci.id
 ),
@@ -186,6 +208,18 @@ cleared_user_bindings AS (
 ),
 cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup
+    WHERE installation_id IN (SELECT id FROM dead)
+),
+cleared_route_context AS (
+    DELETE FROM channel_route_context
+    WHERE installation_id IN (SELECT id FROM dead)
+),
+cleared_delivery_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (SELECT id FROM channel_delivery WHERE installation_id IN (SELECT id FROM dead))
+),
+cleared_deliveries AS (
+    DELETE FROM channel_delivery
     WHERE installation_id IN (SELECT id FROM dead)
 ),
 detached_audit AS (
@@ -234,6 +268,16 @@ cleared_user_bindings AS (
 cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup WHERE installation_id IN (SELECT id FROM doomed)
 ),
+cleared_route_context AS (
+    DELETE FROM channel_route_context WHERE installation_id IN (SELECT id FROM doomed)
+),
+cleared_delivery_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (SELECT id FROM channel_delivery WHERE installation_id IN (SELECT id FROM doomed))
+),
+cleared_deliveries AS (
+    DELETE FROM channel_delivery WHERE installation_id IN (SELECT id FROM doomed)
+),
 cleared_audit AS (
     -- Hard delete: purge audit rows rather than detaching them into permanently
     -- unattributable NULL rows (channel_inbound_audit has no workspace_id / reaper).
@@ -264,8 +308,11 @@ ORDER BY created_at ASC;
 -- archival, so an archived-but-present agent's installation is still listed.
 SELECT ci.* FROM channel_installation ci
 JOIN workspace w ON w.id = ci.workspace_id
-JOIN agent a ON a.id = ci.agent_id
+LEFT JOIN agent a ON ci.target_type = 'agent' AND a.id = ci.target_id
+LEFT JOIN squad s ON ci.target_type = 'squad' AND s.id = ci.target_id
 WHERE ci.status = 'active'
+  AND ((ci.target_type = 'agent' AND a.id IS NOT NULL)
+    OR (ci.target_type = 'squad' AND s.id IS NOT NULL AND s.archived_at IS NULL))
   AND ci.channel_type = sqlc.arg('channel_type')
 ORDER BY ci.created_at ASC;
 
@@ -281,8 +328,11 @@ ORDER BY ci.created_at ASC;
 -- DELETE CASCADE semantics (row existence, not agent archival).
 SELECT ci.* FROM channel_installation ci
 JOIN workspace w ON w.id = ci.workspace_id
-JOIN agent a ON a.id = ci.agent_id
+LEFT JOIN agent a ON ci.target_type = 'agent' AND a.id = ci.target_id
+LEFT JOIN squad s ON ci.target_type = 'squad' AND s.id = ci.target_id
 WHERE ci.status = 'active'
+  AND ((ci.target_type = 'agent' AND a.id IS NOT NULL)
+    OR (ci.target_type = 'squad' AND s.id IS NOT NULL AND s.archived_at IS NULL))
 ORDER BY ci.created_at ASC;
 
 -- name: SetChannelInstallationStatus :exec
@@ -370,6 +420,10 @@ RETURNING *;
 SELECT * FROM channel_user_binding
 WHERE installation_id = $1 AND channel_user_id = $2;
 
+-- name: GetChannelUserBindingForMulticaUser :one
+SELECT * FROM channel_user_binding
+WHERE installation_id = $1 AND multica_user_id = $2;
+
 -- name: FindReusableChannelUserBinding :one
 -- Cross-installation account-link reuse (MUL-3911). When a platform user
 -- messages an installation they have NOT linked, but the SAME user id is already
@@ -425,9 +479,9 @@ WHERE installation_id = $1;
 -- key alone does not (e.g. Slack's real channel_id when the key is composite);
 -- it is opaque to the shared session service.
 INSERT INTO channel_chat_session_binding (
-    chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, config
+    chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, config, agent_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6
+    $1, $2, $3, $4, $5, $6, $7
 )
 RETURNING *;
 
@@ -435,7 +489,7 @@ RETURNING *;
 -- Lookup-by-channel-chat: the inbound dispatcher finds the existing
 -- chat_session before deciding whether to create one.
 SELECT * FROM channel_chat_session_binding
-WHERE installation_id = $1 AND channel_chat_id = $2;
+WHERE installation_id = $1 AND channel_chat_id = $2 AND agent_id = $3;
 
 -- name: GetChannelChatSessionBindingBySession :one
 -- Reverse lookup for the outbound patcher: given a chat_session_id, find
@@ -791,3 +845,237 @@ SELECT
     count(*) FILTER (WHERE state <> 'tombstoned') AS pending_objects,
     count(*) FILTER (WHERE state = 'tombstoned') AS tombstoned_objects
 FROM channel_media_pending_object;
+
+-- =====================
+-- channel_route_context
+-- =====================
+
+-- name: UpsertChannelRouteContext :one
+INSERT INTO channel_route_context (
+    workspace_id, installation_id, channel_type, conversation_key,
+    channel_user_id, issue_id, agent_id, source_message_id, expires_at
+) VALUES (
+    @workspace_id, @installation_id, @channel_type, @conversation_key,
+    @channel_user_id, @issue_id, @agent_id, @source_message_id, @expires_at
+)
+ON CONFLICT (installation_id, conversation_key, channel_user_id)
+WHERE consumed_at IS NULL
+DO UPDATE SET
+    workspace_id      = EXCLUDED.workspace_id,
+    channel_type      = EXCLUDED.channel_type,
+    issue_id          = EXCLUDED.issue_id,
+    agent_id          = EXCLUDED.agent_id,
+    source_message_id = EXCLUDED.source_message_id,
+    expires_at        = EXCLUDED.expires_at,
+    updated_at        = now()
+RETURNING *;
+
+-- name: GetPendingChannelRouteContext :one
+SELECT * FROM channel_route_context
+WHERE installation_id = @installation_id
+  AND conversation_key = @conversation_key
+  AND channel_user_id = @channel_user_id
+  AND consumed_at IS NULL
+  AND expires_at > now();
+
+-- name: ConsumeChannelRouteContext :one
+UPDATE channel_route_context
+SET consumed_at = now(), updated_at = now()
+WHERE id = @id
+  AND consumed_at IS NULL
+  AND expires_at > now()
+RETURNING *;
+
+-- name: CancelChannelRouteContext :execrows
+UPDATE channel_route_context
+SET consumed_at = now(), updated_at = now()
+WHERE installation_id = @installation_id
+  AND conversation_key = @conversation_key
+  AND channel_user_id = @channel_user_id
+  AND consumed_at IS NULL;
+
+-- name: DeleteExpiredChannelRouteContexts :execrows
+DELETE FROM channel_route_context
+WHERE expires_at <= now() OR consumed_at < now() - @consumed_retention::interval;
+
+-- name: DeleteChannelRouteContextsByInstallation :exec
+DELETE FROM channel_route_context WHERE installation_id = $1;
+
+-- =====================
+-- channel_delivery
+-- =====================
+
+-- name: CreateChannelDelivery :one
+INSERT INTO channel_delivery (
+    workspace_id, installation_id, channel_type, kind, request_key, route_type,
+    reply_policy, task_id, chat_session_id, issue_id, agent_id,
+    source_user_id, destination_channel_user_id, destination_chat_id,
+    destination_thread_id, destination_message_id
+) VALUES (
+    @workspace_id, @installation_id, @channel_type, @kind, @request_key, @route_type,
+    @reply_policy, @task_id, @chat_session_id, @issue_id, @agent_id,
+    @source_user_id, @destination_channel_user_id, @destination_chat_id,
+    @destination_thread_id, @destination_message_id
+)
+RETURNING *;
+
+-- name: GetOrCreateChannelDelivery :one
+WITH inserted AS (
+    INSERT INTO channel_delivery (
+        workspace_id, installation_id, channel_type, kind, request_key, route_type,
+        reply_policy, task_id, chat_session_id, issue_id, agent_id,
+        source_user_id, destination_channel_user_id, destination_chat_id,
+        destination_thread_id, destination_message_id
+    ) VALUES (
+        @workspace_id, @installation_id, @channel_type, @kind, @request_key, @route_type,
+        @reply_policy, @task_id, @chat_session_id, @issue_id, @agent_id,
+        @source_user_id, @destination_channel_user_id, @destination_chat_id,
+        @destination_thread_id, @destination_message_id
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING *
+)
+SELECT * FROM inserted
+UNION ALL
+SELECT * FROM channel_delivery
+WHERE task_id = @task_id
+  AND installation_id = @installation_id
+  AND kind = @kind
+  AND COALESCE(destination_chat_id, '') = COALESCE(@destination_chat_id, '')
+  AND COALESCE(destination_channel_user_id, '') = COALESCE(@destination_channel_user_id, '')
+LIMIT 1;
+
+-- name: GetOrCreateProactiveDelivery :one
+WITH inserted AS (
+    INSERT INTO channel_delivery (
+        workspace_id, installation_id, channel_type, kind, request_key,
+        route_type, reply_policy, chat_session_id, issue_id, agent_id, source_user_id,
+        destination_channel_user_id
+    ) VALUES (
+        @workspace_id, @installation_id, @channel_type, 'proactive_push', @request_key,
+        @route_type, @reply_policy, @chat_session_id, @issue_id, @agent_id, @source_user_id,
+        @destination_channel_user_id
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING *
+)
+SELECT * FROM inserted
+UNION ALL
+SELECT * FROM channel_delivery
+WHERE installation_id = @installation_id
+  AND kind = 'proactive_push'
+  AND request_key = @request_key
+LIMIT 1;
+
+-- name: GetProactiveDeliveryByKey :one
+SELECT * FROM channel_delivery
+WHERE installation_id = $1
+  AND kind = 'proactive_push'
+  AND request_key = $2;
+
+-- name: GetLatestProactiveChatDelivery :one
+SELECT * FROM channel_delivery
+WHERE installation_id = $1
+  AND agent_id = $2
+  AND kind = 'proactive_push'
+  AND route_type = 'chat'
+  AND chat_session_id IS NOT NULL
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetChannelDelivery :one
+SELECT * FROM channel_delivery WHERE id = $1;
+
+-- name: ListChannelDeliveriesByTask :many
+SELECT * FROM channel_delivery
+WHERE task_id = $1
+ORDER BY created_at ASC;
+
+-- name: ListChannelDeliveryMessages :many
+SELECT * FROM channel_delivery_message
+WHERE delivery_id = $1
+ORDER BY ordinal ASC, created_at ASC;
+
+-- name: SetChannelDeliveryStatus :execrows
+UPDATE channel_delivery
+SET status = @status,
+    terminal_reason = @terminal_reason,
+    last_error = @last_error,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    updated_at = now()
+WHERE id = @id;
+
+-- name: CreateChannelDeliveryMessage :one
+INSERT INTO channel_delivery_message (
+    delivery_id, source_comment_id, ordinal, idempotency_key
+) VALUES (
+    @delivery_id, @source_comment_id, @ordinal, @idempotency_key
+)
+ON CONFLICT (delivery_id, idempotency_key) DO UPDATE SET
+    updated_at = channel_delivery_message.updated_at
+RETURNING *;
+
+-- name: MarkChannelDeliveryMessageSent :execrows
+UPDATE channel_delivery_message
+SET status = 'sent',
+    channel_message_id = @channel_message_id,
+    sent_at = now(),
+    last_error = NULL,
+    updated_at = now()
+WHERE id = @id AND status <> 'sent';
+
+-- name: MarkChannelDeliveryMessageFailed :execrows
+UPDATE channel_delivery_message
+SET status = 'failed',
+    attempt_count = attempt_count + 1,
+    last_error = @last_error,
+    updated_at = now()
+WHERE id = @id AND status <> 'sent';
+
+-- name: GetChannelDeliveryRouteByMessageID :one
+SELECT d.* FROM channel_delivery d
+JOIN channel_delivery_message m ON m.delivery_id = d.id
+WHERE d.installation_id = @installation_id
+  AND m.channel_message_id = @channel_message_id
+  AND m.status = 'sent';
+
+-- name: ChannelDeliveryMessageWasSentToUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM channel_delivery_message m
+    JOIN channel_delivery d ON d.id = m.delivery_id
+    WHERE m.source_comment_id = @source_comment_id
+      AND d.source_user_id = @user_id
+      AND d.kind = 'conversation_reply'
+      AND m.status = 'sent'
+) AS was_sent;
+
+-- name: DeleteChannelDeliveryDataByInstallation :exec
+WITH deleted_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (
+        SELECT id FROM channel_delivery
+        WHERE channel_delivery.installation_id = sqlc.arg('installation_id')
+    )
+)
+DELETE FROM channel_delivery
+WHERE channel_delivery.installation_id = sqlc.arg('installation_id');
+
+-- name: DeleteChannelRoutingDataByIssue :exec
+WITH deleted_messages AS (
+    DELETE FROM channel_delivery_message
+    WHERE delivery_id IN (
+        SELECT id FROM channel_delivery
+        WHERE channel_delivery.issue_id = sqlc.arg('issue_id')
+          AND channel_delivery.workspace_id = sqlc.arg('workspace_id')
+    )
+),
+deleted_deliveries AS (
+    DELETE FROM channel_delivery
+    WHERE channel_delivery.issue_id = sqlc.arg('issue_id')
+      AND channel_delivery.workspace_id = sqlc.arg('workspace_id')
+)
+DELETE FROM channel_route_context
+WHERE channel_route_context.issue_id = sqlc.arg('issue_id')
+  AND channel_route_context.workspace_id = sqlc.arg('workspace_id');

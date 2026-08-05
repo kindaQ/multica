@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -302,7 +303,8 @@ const (
 func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channel.InboundMessage, inst ResolvedInstallation, claimToken pgtype.UUID, bareFresh bool) (Result, dedupFinalize, error) {
 	// 3. Group-mention filter (group chats only), before identity so an
 	//    unbound user's idle group chatter never spams a binding card.
-	if msg.Source.ChatType == channel.ChatTypeGroup && !msg.AddressedToBot {
+	command := strings.TrimSpace(msg.CommandText)
+	if msg.Source.ChatType == channel.ChatTypeGroup && !msg.AddressedToBot && msg.ReplyTo == nil && !strings.HasPrefix(strings.ToLower(command), "/route") {
 		return r.drop(ctx, set, msg, inst.ID, DropReasonNotAddressedInGroup), finalizeMark, nil
 	}
 
@@ -326,21 +328,77 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 		}
 	}
 
-	// 5. Resolve the chat_session. Group sessions are created by the INSTALLER
+	// 5. Resolve an optional reply/one-shot route before creating a session.
+	// Control commands finalize dedup but never enter an agent transcript.
+	var routeContextID pgtype.UUID
+	var routedChatSessionID pgtype.UUID
+	if set.Route != nil {
+		resolved, routeErr := set.Route.ResolveRoute(ctx, inst, identity, msg)
+		if routeErr != nil {
+			return Result{}, finalizeRelease, fmt.Errorf("resolve channel route: %w", routeErr)
+		}
+		inst = resolved.Installation
+		routeContextID = resolved.RouteContextID
+		routedChatSessionID = resolved.ChatSessionID
+		if resolved.Ignored {
+			return r.drop(ctx, set, msg, inst.ID, DropReasonNotAddressedInGroup), finalizeMark, nil
+		}
+		if resolved.Handled {
+			return Result{
+				Outcome:        OutcomeControl,
+				InstallationID: inst.ID,
+				Sender:         msg.Source.SenderID,
+				IssueID:        resolved.IssueID,
+				Message:        resolved.Message,
+			}, finalizeMark, nil
+		}
+		if resolved.IssueID.Valid {
+			if set.Issue == nil {
+				return Result{}, finalizeRelease, errors.New("channel router: issue route selected without issue ingester")
+			}
+			ingested, ingestErr := set.Issue.IngestIssueMessage(ctx, IssueIngressParams{
+				Installation:   inst,
+				Sender:         identity,
+				Message:        msg,
+				IssueID:        resolved.IssueID,
+				RouteContextID: resolved.RouteContextID,
+				ClaimToken:     claimToken,
+			})
+			if ingestErr != nil {
+				return Result{}, finalizeRelease, fmt.Errorf("ingest issue message: %w", ingestErr)
+			}
+			finalize := finalizeMark
+			if ingested.DedupMarked {
+				finalize = finalizeNone
+			}
+			return Result{
+				Outcome:        OutcomeIngested,
+				InstallationID: inst.ID,
+				Sender:         msg.Source.SenderID,
+				IssueID:        resolved.IssueID,
+			}, finalize, nil
+		}
+	}
+
+	// 6. Resolve the chat_session. Group sessions are created by the INSTALLER
 	//    (stable workspace identity that won't churn with group membership);
 	//    p2p sessions by the sole human sender.
 	sessionCreator := identity.UserID
 	if msg.Source.ChatType == channel.ChatTypeGroup {
 		sessionCreator = inst.InstallerUserID
 	}
-	sessionID, err := set.Session.EnsureSession(ctx, EnsureSessionParams{
-		Installation: inst,
-		Sender:       sessionCreator,
-		Message:      msg,
-	})
-	if err != nil {
-		// Single tx; an error rolled it back, nothing landed. Release.
-		return Result{}, finalizeRelease, fmt.Errorf("ensure chat session: %w", err)
+	sessionID := routedChatSessionID
+	if !sessionID.Valid {
+		var err error
+		sessionID, err = set.Session.EnsureSession(ctx, EnsureSessionParams{
+			Installation: inst,
+			Sender:       sessionCreator,
+			Message:      msg,
+		})
+		if err != nil {
+			// Single tx; an error rolled it back, nothing landed. Release.
+			return Result{}, finalizeRelease, fmt.Errorf("ensure chat session: %w", err)
+		}
 	}
 	if bareFresh {
 		// ForceFresh is a task-dispatch property. A bare command has no useful
@@ -378,6 +436,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 		InstallationID:      inst.ID,
 		Message:             msg,
 		ClaimToken:          claimToken,
+		RouteContextID:      routeContextID,
 		MediaPendingSeconds: mediaPendingSeconds,
 	})
 	if err != nil {
