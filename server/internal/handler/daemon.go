@@ -1696,6 +1696,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			RuntimeConfig:         runtimeConfig,
 			DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 		}
+		// Server-side capability injection keeps self-hosted/public Runtime
+		// machines compatible: old daemons already consume Agent.Instructions,
+		// and the installed CLI already supports `multica feishu push` when the
+		// server supplies the required installation ID here.
+		h.injectFeishuAgentInstructions(r.Context(), parseUUID(runtimeWorkspaceID), task.AgentID, resp.Agent)
 		if useSkillRefs {
 			_, skillRefs := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
 			agentSkillCount = len(skillRefs)

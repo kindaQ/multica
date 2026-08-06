@@ -66,19 +66,6 @@ func TestSubIssueCreationSectionPresentForIssueRuns(t *testing.T) {
 	}
 }
 
-func TestRuntimeBriefAdvertisesAutomaticFeishuPush(t *testing.T) {
-	out := buildMetaSkillContent("codex", TaskContextForEnv{AgentID: "agent-1"})
-	for _, want := range []string{
-		"multica feishu push",
-		"automatically selects the Bot",
-		"--issue-id <issue-id>",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("runtime brief missing %q", want)
-		}
-	}
-}
-
 // The brief must no longer carry any parent-notification guidance. PR
 // #2918 added a "Tell the parent when you finish a child" rule that
 // turned into noise (self-mention loops, planner ack ping-pong,

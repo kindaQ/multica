@@ -10,12 +10,13 @@
 
 ```bash
 multica feishu push \
+  --installation-id <installation-uuid> \
   --content "需要你确认一下方案" \
   --idempotency-key "task-123:review-request" \
   --issue-id <issue-uuid>
 ```
 
-命令会根据当前任务的 workspace 和 agent 自动选择唯一可用的小队 Bot。只有当该 agent 同时可以使用多个已绑定 Bot 时，才需要额外传 `--installation-id`。运行时说明会向小队成员公开这条命令，因此成员无需预先知道安装记录 ID。
+Server 在下发小队成员任务时，会把可用 Bot 的 `installation-id` 和完整命令追加到该 Agent 的运行指令中。这样继续使用公版 Daemon 和旧版 CLI 的 Runtime 也能主动推送，不要求用户升级运行机器。
 
 有 issue 的主动新内容会作为 agent 评论保存，但不触发其他 agent；没有 issue 时会先保存到该 agent 面向安装人的 chat session。两种消息都可按 `reply_policy` 控制引用回复，默认分别为 `issue_route` 和 `chat_route`。`disabled` 会明确拒绝引用路由。
 

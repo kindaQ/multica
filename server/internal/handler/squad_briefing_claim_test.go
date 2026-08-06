@@ -154,6 +154,47 @@ func TestClaim_NonLeaderTask_NoBriefing(t *testing.T) {
 	}
 }
 
+func TestClaim_SquadFeishuBotInjectedIntoAgentInstructions(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	fx := newSquadBriefingClaimFixture(t, ctx, "Feishu instruction")
+
+	var installationID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO channel_installation (
+			workspace_id, agent_id, target_type, target_id, channel_type,
+			config, installer_user_id
+		) VALUES (
+			$1, NULL, 'squad', $2, 'feishu',
+			jsonb_build_object('app_id', $3, 'bot_open_id', 'ou_test', 'app_secret_encrypted', 'test'),
+			$4
+		)
+		RETURNING id
+	`, testWorkspaceID, fx.SquadID, "cli_claim_"+fx.SquadID, testUserID).Scan(&installationID); err != nil {
+		t.Fatalf("create squad Feishu installation: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM channel_installation WHERE id = $1`, installationID)
+	})
+
+	wantTaskID := enqueueClaimTask(t, ctx, fx, false /*isLeader*/, true /*withSquadID*/)
+	gotTaskID, instructions, raw := claimAgentInstructionsForTest(t, fx.RuntimeID)
+	if gotTaskID != wantTaskID {
+		t.Fatalf("claimed task id = %q, want %q: %s", gotTaskID, wantTaskID, raw)
+	}
+	for _, want := range []string{
+		"## Feishu Notifications",
+		"multica feishu push --installation-id " + installationID,
+		"Feishu instruction squad",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("claimed agent instructions missing %q:\n%s", want, instructions)
+		}
+	}
+}
+
 // TestClaim_LeaderTaskWithDanglingSquadID_NoBriefing is the load-bearing
 // contract for dropping the FK on agent_task_queue.squad_id (migration 127):
 // when a squad is hard-deleted AFTER a leader task was enqueued, the task row

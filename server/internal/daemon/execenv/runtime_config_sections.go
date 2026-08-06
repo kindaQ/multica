@@ -268,8 +268,6 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("- `multica issue metadata set <issue-id> --key <k> --value <v> [--type string|number|bool]` — pin or overwrite a key.\n")
 	b.WriteString("- `multica issue metadata delete <issue-id> --key <k>` — remove a key.\n")
 	b.WriteString("- `multica repo checkout <url> [--ref <branch-or-sha>]` — repository checkout on a dedicated branch.\n\n")
-	b.WriteString("### Feishu notifications\n")
-	b.WriteString("- `multica feishu push --content \"...\" --idempotency-key <stable-key> [--issue-id <issue-id>] [--installation-id <id>]` — proactively message the user through an active Feishu Bot shared with your squad. The server automatically selects the Bot when exactly one is available to you; specify `--installation-id` only when it reports multiple choices. With `--issue-id`, a quoted reply returns to this agent in that issue; without it, the reply returns to this agent's chat session. Use a new stable idempotency key for each distinct message.\n\n")
 	// Squad maintenance is squad-leader surface: an agent that leads no squad
 	// has no squad to change roles in, so this shipped to every run as dead
 	// weight (MUL-5442). IsSquadLeader is agent configuration, not per-run
