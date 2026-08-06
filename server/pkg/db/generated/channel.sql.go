@@ -1872,6 +1872,81 @@ func (q *Queries) ListActiveChannelInstallations(ctx context.Context, channelTyp
 	return items, nil
 }
 
+const listActiveChannelInstallationsAccessibleToAgent = `-- name: ListActiveChannelInstallationsAccessibleToAgent :many
+SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at, ci.target_type, ci.target_id
+FROM channel_installation ci
+WHERE ci.workspace_id = $1
+  AND ci.channel_type = $2
+  AND ci.status = 'active'
+  AND (
+    (ci.target_type = 'agent' AND ci.target_id = $3)
+    OR
+    (ci.target_type = 'squad' AND EXISTS (
+      SELECT 1
+      FROM squad s
+      WHERE s.id = ci.target_id
+        AND s.workspace_id = ci.workspace_id
+        AND s.archived_at IS NULL
+        AND (
+          s.leader_id = $3
+          OR EXISTS (
+            SELECT 1
+            FROM squad_member sm
+            WHERE sm.squad_id = s.id
+              AND sm.member_type = 'agent'
+              AND sm.member_id = $3
+          )
+        )
+    ))
+  )
+ORDER BY ci.created_at ASC
+`
+
+type ListActiveChannelInstallationsAccessibleToAgentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ChannelType string      `json:"channel_type"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// Agent-initiated delivery discovery. An agent may use its own direct
+// installation or a squad installation when it is the current leader or an
+// explicit agent member. Keeping this lookup on the server lets the runtime
+// CLI omit installation_id without trusting caller-supplied squad identity.
+func (q *Queries) ListActiveChannelInstallationsAccessibleToAgent(ctx context.Context, arg ListActiveChannelInstallationsAccessibleToAgentParams) ([]ChannelInstallation, error) {
+	rows, err := q.db.Query(ctx, listActiveChannelInstallationsAccessibleToAgent, arg.WorkspaceID, arg.ChannelType, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelInstallation{}
+	for rows.Next() {
+		var i ChannelInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.ChannelType,
+			&i.Config,
+			&i.Status,
+			&i.WsLeaseToken,
+			&i.WsLeaseExpiresAt,
+			&i.InstallerUserID,
+			&i.InstalledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TargetType,
+			&i.TargetID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllActiveChannelInstallations = `-- name: ListAllActiveChannelInstallations :many
 SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at, ci.target_type, ci.target_id FROM channel_installation ci
 JOIN workspace w ON w.id = ci.workspace_id

@@ -126,6 +126,21 @@ func (s *ChannelStore) ListLarkInstallationsByWorkspace(ctx context.Context, wor
 	return installationsFromRows(rows)
 }
 
+func (s *ChannelStore) ListActiveLarkInstallationsAccessibleToAgent(
+	ctx context.Context,
+	workspaceID, agentID pgtype.UUID,
+) ([]Installation, error) {
+	rows, err := s.Queries.ListActiveChannelInstallationsAccessibleToAgent(ctx, db.ListActiveChannelInstallationsAccessibleToAgentParams{
+		WorkspaceID: workspaceID,
+		ChannelType: channelTypeFeishu,
+		AgentID:     agentID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return installationsFromRows(rows)
+}
+
 func (s *ChannelStore) ListActiveLarkInstallations(ctx context.Context) ([]Installation, error) {
 	rows, err := s.Queries.ListActiveChannelInstallations(ctx, channelTypeFeishu)
 	if err != nil {

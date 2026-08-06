@@ -23,10 +23,16 @@ type ProactivePushParams struct {
 }
 
 type ProactivePushResult struct {
-	DeliveryID pgtype.UUID
-	MessageID  string
-	Duplicate  bool
+	InstallationID pgtype.UUID
+	DeliveryID     pgtype.UUID
+	MessageID      string
+	Duplicate      bool
 }
+
+var (
+	ErrNoAccessibleInstallation = errors.New("no active Feishu Bot is available to this agent")
+	ErrAmbiguousInstallations   = errors.New("multiple active Feishu Bots are available")
+)
 
 // DeliveryService is the single guarded entry point for agent-initiated
 // Feishu messages. The recipient is derived from the installation owner; a
@@ -48,8 +54,8 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 	}
 	p.Content = strings.TrimSpace(p.Content)
 	p.IdempotencyKey = strings.TrimSpace(p.IdempotencyKey)
-	if p.Content == "" || p.IdempotencyKey == "" || !p.WorkspaceID.Valid || !p.InstallationID.Valid || !p.AgentID.Valid {
-		return ProactivePushResult{}, errors.New("workspace, installation, agent, content, and idempotency key are required")
+	if p.Content == "" || p.IdempotencyKey == "" || !p.WorkspaceID.Valid || !p.AgentID.Valid {
+		return ProactivePushResult{}, errors.New("workspace, agent, content, and idempotency key are required")
 	}
 	if p.ReplyPolicy == "" {
 		if p.IssueID.Valid {
@@ -65,9 +71,23 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 		return ProactivePushResult{}, errors.New("issue_route requires an issue")
 	}
 
-	inst, err := s.store.GetLarkInstallationInWorkspace(ctx, GetInstallationInWorkspaceParams{ID: p.InstallationID, WorkspaceID: p.WorkspaceID})
-	if err != nil {
-		return ProactivePushResult{}, fmt.Errorf("load installation: %w", err)
+	var inst Installation
+	var err error
+	if p.InstallationID.Valid {
+		inst, err = s.store.GetLarkInstallationInWorkspace(ctx, GetInstallationInWorkspaceParams{ID: p.InstallationID, WorkspaceID: p.WorkspaceID})
+		if err != nil {
+			return ProactivePushResult{}, fmt.Errorf("load installation: %w", err)
+		}
+	} else {
+		installations, listErr := s.store.ListActiveLarkInstallationsAccessibleToAgent(ctx, p.WorkspaceID, p.AgentID)
+		if listErr != nil {
+			return ProactivePushResult{}, fmt.Errorf("discover Feishu installation: %w", listErr)
+		}
+		inst, err = selectSingleAccessibleInstallation(installations)
+		if err != nil {
+			return ProactivePushResult{}, err
+		}
+		p.InstallationID = inst.ID
 	}
 	if InstallationStatus(inst.Status) != InstallationActive {
 		return ProactivePushResult{}, errors.New("feishu installation is not active")
@@ -167,7 +187,7 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 	}
 	for _, message := range messages {
 		if message.Status == "sent" && message.ChannelMessageID.Valid {
-			return ProactivePushResult{DeliveryID: delivery.ID, MessageID: message.ChannelMessageID.String, Duplicate: true}, nil
+			return ProactivePushResult{InstallationID: inst.ID, DeliveryID: delivery.ID, MessageID: message.ChannelMessageID.String, Duplicate: true}, nil
 		}
 	}
 	message, err := s.q.CreateChannelDeliveryMessage(ctx, db.CreateChannelDeliveryMessageParams{
@@ -199,7 +219,22 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 		return ProactivePushResult{}, fmt.Errorf("persist proactive message id: %w", err)
 	}
 	_, _ = s.q.SetChannelDeliveryStatus(ctx, db.SetChannelDeliveryStatusParams{ID: delivery.ID, Status: "sent", TerminalReason: textOrNull("sent")})
-	return ProactivePushResult{DeliveryID: delivery.ID, MessageID: messageID}, nil
+	return ProactivePushResult{InstallationID: inst.ID, DeliveryID: delivery.ID, MessageID: messageID}, nil
+}
+
+func selectSingleAccessibleInstallation(installations []Installation) (Installation, error) {
+	switch len(installations) {
+	case 0:
+		return Installation{}, ErrNoAccessibleInstallation
+	case 1:
+		return installations[0], nil
+	default:
+		ids := make([]string, 0, len(installations))
+		for _, installation := range installations {
+			ids = append(ids, uuidString(installation.ID))
+		}
+		return Installation{}, fmt.Errorf("%w; pass --installation-id with one of: %s", ErrAmbiguousInstallations, strings.Join(ids, ", "))
+	}
 }
 
 func proactiveDeliveryRow(row db.GetOrCreateProactiveDeliveryRow) db.ChannelDelivery {

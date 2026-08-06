@@ -623,9 +623,12 @@ func (h *Handler) CreateLarkDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	installationID, ok := parseUUIDOrBadRequest(w, body.InstallationID, "installation id")
-	if !ok {
-		return
+	var installationID pgtype.UUID
+	if strings.TrimSpace(body.InstallationID) != "" {
+		installationID, ok = parseUUIDOrBadRequest(w, body.InstallationID, "installation id")
+		if !ok {
+			return
+		}
 	}
 	var issueID pgtype.UUID
 	if strings.TrimSpace(body.IssueID) != "" {
@@ -641,11 +644,16 @@ func (h *Handler) CreateLarkDelivery(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.Warn("lark proactive delivery rejected", "workspace_id", workspaceID, "agent_id", actorID, "error", err)
+		if errors.Is(err, lark.ErrNoAccessibleInstallation) || errors.Is(err, lark.ErrAmbiguousInstallations) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "Feishu delivery was rejected by workspace or squad policy")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"delivery_id": uuidToString(result.DeliveryID), "message_id": result.MessageID,
+		"installation_id": uuidToString(result.InstallationID),
+		"delivery_id":     uuidToString(result.DeliveryID), "message_id": result.MessageID,
 		"duplicate": result.Duplicate,
 	})
 }

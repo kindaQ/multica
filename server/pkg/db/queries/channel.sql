@@ -311,6 +311,39 @@ WHERE workspace_id = sqlc.arg('workspace_id')
   AND channel_type = sqlc.arg('channel_type')
 ORDER BY created_at ASC;
 
+-- name: ListActiveChannelInstallationsAccessibleToAgent :many
+-- Agent-initiated delivery discovery. An agent may use its own direct
+-- installation or a squad installation when it is the current leader or an
+-- explicit agent member. Keeping this lookup on the server lets the runtime
+-- CLI omit installation_id without trusting caller-supplied squad identity.
+SELECT ci.*
+FROM channel_installation ci
+WHERE ci.workspace_id = sqlc.arg('workspace_id')
+  AND ci.channel_type = sqlc.arg('channel_type')
+  AND ci.status = 'active'
+  AND (
+    (ci.target_type = 'agent' AND ci.target_id = sqlc.arg('agent_id'))
+    OR
+    (ci.target_type = 'squad' AND EXISTS (
+      SELECT 1
+      FROM squad s
+      WHERE s.id = ci.target_id
+        AND s.workspace_id = ci.workspace_id
+        AND s.archived_at IS NULL
+        AND (
+          s.leader_id = sqlc.arg('agent_id')
+          OR EXISTS (
+            SELECT 1
+            FROM squad_member sm
+            WHERE sm.squad_id = s.id
+              AND sm.member_type = 'agent'
+              AND sm.member_id = sqlc.arg('agent_id')
+          )
+        )
+    ))
+  )
+ORDER BY ci.created_at ASC;
+
 -- name: ListActiveChannelInstallations :many
 -- Boot path for a per-channel-type inbound hub: every active installation of
 -- the given channel_type, so a hub claims leases and opens connections only
