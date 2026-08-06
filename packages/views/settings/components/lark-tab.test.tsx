@@ -28,6 +28,7 @@ const ApiError = vi.hoisted(() => {
 const mockBeginInstall = vi.hoisted(() => vi.fn());
 const mockGetStatus = vi.hoisted(() => vi.fn());
 const mockDeleteInstallation = vi.hoisted(() => vi.fn());
+const mockUseForSquad = vi.hoisted(() => vi.fn());
 const mockInvalidate = vi.hoisted(() => vi.fn());
 
 type MemberRole = "owner" | "admin" | "member" | "guest";
@@ -109,6 +110,7 @@ vi.mock("@multica/core/api", () => ({
     beginLarkInstall: mockBeginInstall,
     getLarkInstallStatus: mockGetStatus,
     deleteLarkInstallation: mockDeleteInstallation,
+    useLarkInstallationForSquad: mockUseForSquad,
   },
   ApiError,
 }));
@@ -145,7 +147,7 @@ vi.mock("react-qr-code", () => {
   return { QRCode: QrStub, default: QrStub };
 });
 
-import { LarkAgentBindButton, LarkTab } from "./lark-tab";
+import { LarkAgentBindButton, LarkSquadBindButton, LarkTab } from "./lark-tab";
 import { toast } from "sonner";
 
 const TEST_RESOURCES = {
@@ -443,6 +445,51 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     });
     expect(screen.getByRole("button", { name: /Bind to Feishu/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Bind to Lark/i })).toBeNull();
+  });
+});
+
+describe("LarkSquadBindButton", () => {
+  beforeEach(resetFixtures);
+
+  it("reuses the leader's existing Bot instead of opening another registration", async () => {
+    installationsRef.current.installations = [
+      {
+        id: "install-leader",
+        workspace_id: "workspace-1",
+        agent_id: "leader-1",
+        target_type: "agent",
+        target_id: "leader-1",
+        app_id: "cli_bot",
+        bot_open_id: "ou_bot",
+        installer_user_id: "user-1",
+        status: "active",
+        installed_at: "2026-08-06T00:00:00Z",
+        created_at: "2026-08-06T00:00:00Z",
+        updated_at: "2026-08-06T00:00:00Z",
+      },
+    ];
+    mockUseForSquad.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(
+      <LarkSquadBindButton
+        squadId="squad-1"
+        squadName="Platform"
+        leaderId="leader-1"
+      />,
+      { wrapper: I18nWrapper },
+    );
+
+    await user.click(screen.getByRole("button", { name: /Use leader's Feishu Bot/i }));
+
+    expect(mockBeginInstall).not.toHaveBeenCalled();
+    expect(mockUseForSquad).toHaveBeenCalledWith(
+      "workspace-1",
+      "install-leader",
+      "squad-1",
+    );
+    await waitFor(() => {
+      expect(mockInvalidate).toHaveBeenCalled();
+    });
   });
 });
 

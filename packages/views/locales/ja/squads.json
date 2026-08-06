@@ -17,7 +17,9 @@
   },
   "inspector": {
     "details_section": "詳細",
-    "archive_button": "アーカイブ"
+    "archive_button": "アーカイブ",
+    "feishu_bot_title": "Feishu ボット",
+    "feishu_bot_description": "1 つのボットをリーダーとスクワッド内の他のエージェントで共有します。"
   },
   "archive_dialog": {
     "title": "このスクワッドをアーカイブしますか？",

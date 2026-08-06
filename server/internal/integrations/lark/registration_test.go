@@ -377,6 +377,27 @@ func TestRegistrationClient_Poll_HTTP500UnparseableIsTerminal(t *testing.T) {
 	}
 }
 
+func TestRegistrationClient_Poll_HTTP429IsRetryable(t *testing.T) {
+	fake := newRegistrationFake(t)
+	fake.mux.HandleFunc(registrationEndpoint, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("ratelimit triggered"))
+	})
+	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
+	_, err := c.Poll(context.Background(), fake.URL(), "dc_x")
+	if err == nil {
+		t.Fatal("want rate-limit error")
+	}
+	var rateErr *RegistrationRateLimitError
+	if !errorsAs(err, &rateErr) {
+		t.Fatalf("want RegistrationRateLimitError, got %T %v", err, err)
+	}
+	if rateErr.RetryAfter != 7*time.Second {
+		t.Fatalf("RetryAfter: got %v want 7s", rateErr.RetryAfter)
+	}
+}
+
 func TestRegistrationClient_Poll_SlowDown(t *testing.T) {
 	fake := newRegistrationFake(t)
 	fake.mux.HandleFunc(registrationEndpoint, func(w http.ResponseWriter, r *http.Request) {
@@ -485,11 +506,11 @@ func TestRegistrationClient_Poll_DomainSwitchOnFeishuTenant(t *testing.T) {
 // gate flips on only one side.
 func TestRegistrationClient_Poll_NoSwitchWhenAlreadyOnMatchingHost(t *testing.T) {
 	cases := []struct {
-		name        string
-		brand       string
-		begunOn     string
-		feishuHost  string
-		larkHost    string
+		name       string
+		brand      string
+		begunOn    string
+		feishuHost string
+		larkHost   string
 	}{
 		{
 			name:       "lark brand on lark host is a no-op",

@@ -17,7 +17,9 @@
   },
   "inspector": {
     "details_section": "详情",
-    "archive_button": "归档"
+    "archive_button": "归档",
+    "feishu_bot_title": "飞书 Bot",
+    "feishu_bot_description": "一个 Bot 供队长和小队内其他智能体共同使用。"
   },
   "archive_dialog": {
     "title": "归档这个小队？",

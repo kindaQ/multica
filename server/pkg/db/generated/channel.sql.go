@@ -2505,6 +2505,61 @@ func (q *Queries) ReleaseChannelWSLease(ctx context.Context, arg ReleaseChannelW
 	return err
 }
 
+const retargetChannelInstallationToSquad = `-- name: RetargetChannelInstallationToSquad :one
+UPDATE channel_installation
+SET target_type = 'squad',
+    target_id = $1,
+    agent_id = NULL,
+    updated_at = now()
+WHERE id = $2
+  AND workspace_id = $3
+  AND channel_type = $4
+  AND status = 'active'
+  AND target_type = 'agent'
+  AND agent_id = $5
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at, target_type, target_id
+`
+
+type RetargetChannelInstallationToSquadParams struct {
+	SquadID     pgtype.UUID `json:"squad_id"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ChannelType string      `json:"channel_type"`
+	LeaderID    pgtype.UUID `json:"leader_id"`
+}
+
+// Reuse a leader's existing Bot for the squad without starting another Lark
+// device-registration flow. The leader match prevents a squad manager from
+// taking an unrelated agent's installation. Credentials and user bindings stay
+// attached to the same installation row.
+func (q *Queries) RetargetChannelInstallationToSquad(ctx context.Context, arg RetargetChannelInstallationToSquadParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, retargetChannelInstallationToSquad,
+		arg.SquadID,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.ChannelType,
+		arg.LeaderID,
+	)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TargetType,
+		&i.TargetID,
+	)
+	return i, err
+}
+
 const setChannelDeliveryStatus = `-- name: SetChannelDeliveryStatus :execrows
 UPDATE channel_delivery
 SET status = $1,

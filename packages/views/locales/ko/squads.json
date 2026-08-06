@@ -17,7 +17,9 @@
   },
   "inspector": {
     "details_section": "세부 정보",
-    "archive_button": "보관"
+    "archive_button": "보관",
+    "feishu_bot_title": "Feishu 봇",
+    "feishu_bot_description": "하나의 봇을 리더와 스쿼드의 다른 에이전트가 함께 사용합니다."
   },
   "archive_dialog": {
     "title": "이 스쿼드를 보관할까요?",

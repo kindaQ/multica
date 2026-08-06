@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -210,6 +211,86 @@ func (h *Handler) RevokeLarkInstallation(w http.ResponseWriter, r *http.Request)
 	}
 	h.publish(protocol.EventLarkInstallationRevoked, uuidToString(wsUUID), "user", userID, map[string]any{
 		"id": uuidToString(instUUID),
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type retargetLarkInstallationToSquadRequest struct {
+	SquadID string `json:"squad_id"`
+}
+
+// RetargetLarkInstallationToSquad reuses the current leader's active Bot as
+// the squad Bot. It avoids a second PersonalAgent registration while keeping
+// the durable routing owner squad-scoped.
+func (h *Handler) RetargetLarkInstallationToSquad(w http.ResponseWriter, r *http.Request) {
+	if h.LarkInstallations == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	instUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "installationId"), "installation id")
+	if !ok {
+		return
+	}
+	var body retargetLarkInstallationToSquadRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	squadUUID, ok := parseUUIDOrBadRequest(w, body.SquadID, "squad_id")
+	if !ok {
+		return
+	}
+	squad, err := h.Queries.GetSquadInWorkspace(r.Context(), db.GetSquadInWorkspaceParams{
+		ID: squadUUID, WorkspaceID: wsUUID,
+	})
+	if err != nil || squad.ArchivedAt.Valid {
+		writeError(w, http.StatusNotFound, "squad not found in this workspace")
+		return
+	}
+	member, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(wsUUID))
+	if err != nil || !canManageSquad(member, squad) {
+		writeError(w, http.StatusForbidden, "not allowed to manage this squad")
+		return
+	}
+	inst, err := h.LarkInstallations.GetInWorkspace(r.Context(), instUUID, wsUUID)
+	if err != nil || inst.Status != string(lark.InstallationActive) ||
+		lark.InstallationTargetType(inst.TargetType) != lark.InstallationTargetAgent ||
+		!inst.AgentID.Valid || inst.AgentID.Bytes != squad.LeaderID.Bytes {
+		writeError(w, http.StatusConflict, "installation is not the current leader's active Bot")
+		return
+	}
+	leader, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID: squad.LeaderID, WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "squad leader not found")
+		return
+	}
+	if !h.canManageAgent(w, r, leader) {
+		return
+	}
+	updated, err := h.LarkInstallations.RetargetToSquad(
+		r.Context(), instUUID, wsUUID, squadUUID, squad.LeaderID,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "this squad already has a Feishu Bot")
+			return
+		}
+		writeError(w, http.StatusConflict, "could not use the leader Bot for this squad")
+		return
+	}
+	h.publish(protocol.EventLarkInstallationCreated, uuidToString(wsUUID), "user", userID, map[string]any{
+		"id": uuidToString(updated.ID),
 	})
 	w.WriteHeader(http.StatusNoContent)
 }

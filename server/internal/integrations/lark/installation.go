@@ -155,6 +155,23 @@ func (s *InstallationService) GetInWorkspace(ctx context.Context, id, workspaceI
 	return row, nil
 }
 
+// RetargetToSquad transfers a leader's active agent installation to its squad.
+// The row identity, encrypted credentials, installer binding and live WebSocket
+// lease stay intact, so this does not create another PersonalAgent in Feishu.
+func (s *InstallationService) RetargetToSquad(
+	ctx context.Context,
+	id, workspaceID, squadID, leaderID pgtype.UUID,
+) (Installation, error) {
+	row, err := s.queries.RetargetLarkInstallationToSquad(ctx, id, workspaceID, squadID, leaderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Installation{}, ErrInstallationNotFound
+		}
+		return Installation{}, err
+	}
+	return row, nil
+}
+
 // ListByWorkspace returns every installation rooted at the workspace,
 // active and revoked, oldest first. The status column lets the UI
 // distinguish "wired up" from "torn down but kept for audit".

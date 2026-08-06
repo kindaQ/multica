@@ -15,7 +15,7 @@ import { useNavigation } from "../../navigation";
 import { AppLink } from "../../navigation";
 import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { PageHeader } from "../../layout/page-header";
-import { Users, Plus, Trash2, ArrowUpRight, Crown, Loader2, Pencil, FileText, Save } from "lucide-react";
+import { Users, Plus, Trash2, ArrowUpRight, Crown, Loader2, Pencil, FileText, Save, MessagesSquare } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
@@ -212,13 +212,10 @@ export function SquadDetailPage() {
         }
         actions={
           canManage ? (
-            <div className="flex items-center gap-2">
-              <LarkSquadBindButton squadId={squad.id} squadName={squad.name} />
-              <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setConfirmArchive(true)}>
-                <Trash2 className="size-3.5 mr-1" />
-                {t(($) => $.inspector.archive_button)}
-              </Button>
-            </div>
+            <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setConfirmArchive(true)}>
+              <Trash2 className="size-3.5 mr-1" />
+              {t(($) => $.inspector.archive_button)}
+            </Button>
           ) : null
         }
       />
@@ -233,6 +230,15 @@ export function SquadDetailPage() {
           leaderName={getEntityName("agent", squad.leader_id)}
           creatorName={getEntityName("member", squad.creator_id)}
           canManage={canManage}
+          larkBinding={
+            canManage ? (
+              <LarkSquadBindButton
+                squadId={squad.id}
+                squadName={squad.name}
+                leaderId={squad.leader_id}
+              />
+            ) : null
+          }
           onUploadAvatar={(url) => updateSquadMut.mutateAsync({ avatar_url: url })}
           onRename={async (next) => { await updateSquadMut.mutateAsync({ name: next.trim() }); }}
           onUpdateDescription={async (next) => { await updateSquadMut.mutateAsync({ description: next }); }}
@@ -718,6 +724,7 @@ function SquadDetailInspector({
   leaderName,
   creatorName,
   canManage,
+  larkBinding,
   onUploadAvatar,
   onRename,
   onUpdateDescription,
@@ -730,6 +737,7 @@ function SquadDetailInspector({
   // no rename/description popovers) — the viewer can read the squad but not
   // edit it. Mirrors the agent inspector's `canEdit` read-only treatment.
   canManage: boolean;
+  larkBinding: ReactNode;
   onUploadAvatar: (url: string) => Promise<unknown>;
   onRename: (next: string) => Promise<void>;
   onUpdateDescription: (next: string) => Promise<void>;
@@ -812,6 +820,23 @@ function SquadDetailInspector({
           </InspectorRow>
         </div>
       </div>
+
+      {larkBinding ? (
+        <div className="px-5 py-4">
+          <div className="mb-3 flex items-start gap-2.5">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
+              <MessagesSquare className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-caption font-medium">{t(($) => $.inspector.feishu_bot_title)}</div>
+              <p className="mt-0.5 text-micro leading-relaxed text-muted-foreground">
+                {t(($) => $.inspector.feishu_bot_description)}
+              </p>
+            </div>
+          </div>
+          {larkBinding}
+        </div>
+      ) : null}
     </aside>
   );
 }
