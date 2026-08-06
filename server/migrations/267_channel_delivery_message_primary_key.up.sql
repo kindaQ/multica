@@ -1,0 +1,1 @@
+ALTER TABLE channel_delivery_message ADD CONSTRAINT channel_delivery_message_pkey PRIMARY KEY USING INDEX channel_delivery_message_id_uidx;

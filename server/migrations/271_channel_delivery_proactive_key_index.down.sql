@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS channel_delivery_proactive_key_uidx;

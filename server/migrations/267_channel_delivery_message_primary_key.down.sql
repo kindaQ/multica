@@ -1,0 +1,1 @@
+ALTER TABLE channel_delivery_message DROP CONSTRAINT IF EXISTS channel_delivery_message_pkey;

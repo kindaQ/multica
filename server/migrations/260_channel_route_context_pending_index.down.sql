@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS channel_route_context_pending_uidx;

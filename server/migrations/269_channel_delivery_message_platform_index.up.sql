@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY channel_delivery_message_platform_uidx ON channel_delivery_message (channel_message_id) WHERE channel_message_id IS NOT NULL;

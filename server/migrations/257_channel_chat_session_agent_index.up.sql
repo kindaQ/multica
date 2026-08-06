@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY channel_chat_session_binding_agent_uidx ON channel_chat_session_binding (installation_id, channel_chat_id, agent_id);

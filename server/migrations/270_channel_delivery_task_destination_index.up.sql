@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY channel_delivery_task_destination_uidx ON channel_delivery (task_id, installation_id, kind, COALESCE(destination_chat_id, ''), COALESCE(destination_channel_user_id, '')) WHERE task_id IS NOT NULL;

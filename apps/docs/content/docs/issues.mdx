@@ -1,0 +1,93 @@
+---
+title: Issues
+description: An issue holds one piece of work's context, assignee, status, and execution history.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+An issue is Multica's basic unit for organizing work: a feature, a bug, an investigation — anything a member or an agent should own and drive forward. The discussion around it, its status changes, and every run stay in one place, so there is no need to reassemble context from chat logs or terminal output.
+
+## Parts of an issue
+
+| Part | Purpose |
+|---|---|
+| **Title and description** | Goal, background, requirements, and acceptance criteria. |
+| **Status and priority** | Where the work stands and what to handle first. |
+| **Assignee** | A workspace member, an agent, or a squad. |
+| **Dates, labels, and custom properties** | Planning, categorization, and your team's own fields. |
+| **Project and parent-child relationships** | Fits into a larger body of work, or splits into sub-issues. |
+| **Activity and execution log** | Comments, status changes, tasks, and results returned by agents. |
+
+![Issue detail: description, discussion, properties on the right, and the execution log](/images/docs/quickstart-run-result.png)
+
+## Create an issue
+
+Create one from the **Issues** page or inside a project — a title is enough, and every other property can be filled in later.
+
+Each issue has a number, such as `MUL-123`. The digits increment within the workspace; after an admin changes the workspace's issue prefix, numbers display with the new prefix. See [Workspaces](/workspaces#create-a-workspace).
+
+## Choose an assignee
+
+| Assignee | Effect |
+|---|---|
+| **Member** | That member owns the follow-up; no task is created. |
+| **Agent** | A task is created for that agent. |
+| **Squad** | The squad leader receives it and decides who handles it. |
+
+When assigned to an agent or a squad, the issue enqueues immediately unless it is in `backlog`; if the runtime is offline, the task waits in the queue. Archived agents and squads cannot be assigned.
+
+Assignment does not bypass an agent's Access; when assigning to a squad, the leader's Access is what gets checked. See [Assign issues to agents](/assigning-issues).
+
+## Status
+
+| Status | Meaning |
+|---|---|
+| `backlog` | Not starting yet. An issue assigned to an agent only creates a task after it leaves `backlog`. |
+| `todo` | Scoped and waiting to start. |
+| `in_progress` | Being worked on. |
+| `in_review` | Has a result waiting for review. |
+| `done` | Finished. |
+| `blocked` | Cannot continue for now. |
+| `cancelled` | No longer pursued; the record stays. |
+
+There is no fixed flow between statuses — members and agents can change them directly.
+
+Once an issue is assigned to an agent, the agent is expected to move the status from `backlog` / `todo` to `in_progress` when it starts, then to `in_review` when it has delivered. These updates are written explicitly by the agent through the Multica CLI during the run — the server does not flip issue status when a task starts or completes (apart from the two system exceptions below). `done` is usually a human confirmation, or an integration such as a PR with close intent that merges.
+
+<Callout type="info">
+Two changes are made by the system:
+
+- When a run fails, the issue has no other runs, and no retry is triggered, `in_progress` rolls back to `todo`.
+- When a linked GitHub PR merges with close intent and no other linked PR is still open or draft, the issue becomes `done`.
+</Callout>
+
+## Issues and tasks
+
+An issue is the persistent record of a piece of work; a [task](/tasks) is one concrete run by an agent. One issue can produce several tasks over time — a first implementation, follow-up changes, another check. A completed task only means that run ended; whether the issue is finished is determined by the issue's status.
+
+## Projects and sub-issues
+
+An issue belongs to at most one [project](/projects); the project provides shared instructions and resources for runs inside it. Moving an issue to another project does not create a copy.
+
+Larger work can be split into sub-issues: the parent issue keeps the overall goal while sub-issues progress independently. Parent and child statuses do not affect each other.
+
+Sub-issues can be given a **stage** to advance in batches — 1, 2, 3. When every sub-issue in the earliest unfinished stage reaches `done` or `cancelled`, the parent issue receives a "sub-issues completed" notification; when the parent's assignee is an agent, it wakes up and decides whether to start the next stage. Sub-issues without a stage count as one batch and notify once when they all finish.
+
+## Switch views
+
+The Issues page offers five views — list, board, table, Gantt, and swimlane — filterable and sortable by status, assignee, project, and other properties. They all show the same issues.
+
+## Delete an issue
+
+Any workspace member can delete an issue.
+
+<Callout type="warning">
+Deletion cannot be undone: the issue with its comments, attachments, and linked records is permanently removed, and unfinished tasks are cancelled. When the work is simply no longer pursued, set the status to `cancelled` instead — the discussion and results stay available.
+</Callout>
+
+## Next steps
+
+- [Projects](/projects) — organize work that takes multiple issues to finish.
+- [Comments](/comments) — discuss, reply, and @mention around an issue.
+- [Assign issues to agents](/assigning-issues) — hand work to an agent and start the first run.
+- [Tasks](/tasks) — learn about queuing, running, retries, and cancellation.
