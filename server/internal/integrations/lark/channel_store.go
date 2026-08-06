@@ -98,6 +98,23 @@ func (s *ChannelStore) GetLarkInstallationInWorkspace(ctx context.Context, arg G
 	return installationFromRow(row)
 }
 
+func (s *ChannelStore) RetargetLarkInstallationToSquad(
+	ctx context.Context,
+	id, workspaceID, squadID, leaderID pgtype.UUID,
+) (Installation, error) {
+	row, err := s.Queries.RetargetChannelInstallationToSquad(ctx, db.RetargetChannelInstallationToSquadParams{
+		ID:          id,
+		WorkspaceID: workspaceID,
+		ChannelType: channelTypeFeishu,
+		SquadID:     squadID,
+		LeaderID:    leaderID,
+	})
+	if err != nil {
+		return Installation{}, err
+	}
+	return installationFromRow(row)
+}
+
 func (s *ChannelStore) ListLarkInstallationsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]Installation, error) {
 	rows, err := s.Queries.ListChannelInstallationsByWorkspace(ctx, db.ListChannelInstallationsByWorkspaceParams{
 		WorkspaceID: workspaceID,

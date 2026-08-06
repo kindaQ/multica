@@ -106,6 +106,24 @@ WHERE id = sqlc.arg('id')
   AND workspace_id = sqlc.arg('workspace_id')
   AND channel_type = sqlc.arg('channel_type');
 
+-- name: RetargetChannelInstallationToSquad :one
+-- Reuse a leader's existing Bot for the squad without starting another Lark
+-- device-registration flow. The leader match prevents a squad manager from
+-- taking an unrelated agent's installation. Credentials and user bindings stay
+-- attached to the same installation row.
+UPDATE channel_installation
+SET target_type = 'squad',
+    target_id = sqlc.arg('squad_id'),
+    agent_id = NULL,
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND workspace_id = sqlc.arg('workspace_id')
+  AND channel_type = sqlc.arg('channel_type')
+  AND status = 'active'
+  AND target_type = 'agent'
+  AND agent_id = sqlc.arg('leader_id')
+RETURNING *;
+
 -- name: GetChannelInstallationByAppID :one
 -- Inbound routing. The platform event carries only the channel's app
 -- identifier (Feishu app_id); the dispatcher's installation resolver routes

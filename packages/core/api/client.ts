@@ -3307,6 +3307,20 @@ export class ApiClient {
     });
   }
 
+  async useLarkInstallationForSquad(
+    workspaceId: string,
+    installationId: string,
+    squadId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/squad`,
+      {
+        method: "POST",
+        body: JSON.stringify({ squad_id: squadId }),
+      },
+    );
+  }
+
   async redeemLarkBindingToken(token: string): Promise<RedeemLarkBindingTokenResponse> {
     return this.fetch(`/api/lark/binding/redeem`, {
       method: "POST",

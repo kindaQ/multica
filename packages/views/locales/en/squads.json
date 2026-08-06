@@ -17,7 +17,9 @@
   },
   "inspector": {
     "details_section": "Details",
-    "archive_button": "Archive"
+    "archive_button": "Archive",
+    "feishu_bot_title": "Feishu Bot",
+    "feishu_bot_description": "One Bot routes messages to the leader and other agents in this squad."
   },
   "archive_dialog": {
     "title": "Archive this squad?",

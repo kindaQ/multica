@@ -509,6 +509,13 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 
 		res, err := s.client.Poll(ctx, domain, deviceCode)
 		if err != nil {
+			var rateLimitErr *RegistrationRateLimitError
+			if errors.As(err, &rateLimitErr) {
+				interval = nextRegistrationRateLimitBackoff(interval, rateLimitErr.RetryAfter)
+				s.cfg.Logger.Warn("lark registration: rate limited, backing off",
+					"session_id", sess.id, "retry_after", interval)
+				continue
+			}
 			var re *RegistrationError
 			if errors.As(err, &re) {
 				s.cfg.Logger.Warn("lark registration: protocol error",
@@ -565,6 +572,23 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 			// authorization_pending — keep the interval, loop.
 		}
 	}
+}
+
+func nextRegistrationRateLimitBackoff(current, retryAfter time.Duration) time.Duration {
+	if current <= 0 {
+		current = time.Duration(registrationDefaultPollSeconds) * time.Second
+	}
+	if retryAfter > current {
+		return retryAfter
+	}
+	next := current * 2
+	if next < 10*time.Second {
+		next = 10 * time.Second
+	}
+	if next > time.Minute {
+		next = time.Minute
+	}
+	return next
 }
 
 // finishSuccess runs the post-poll finalization: bot info lookup +

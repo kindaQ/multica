@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -219,6 +220,21 @@ type RegistrationError struct {
 	Description string
 }
 
+// RegistrationRateLimitError is a transient HTTP 429 from the device-flow
+// endpoint. Polling callers must back off and keep the registration session
+// alive instead of asking the user to create another PersonalAgent.
+type RegistrationRateLimitError struct {
+	RetryAfter  time.Duration
+	Description string
+}
+
+func (e *RegistrationRateLimitError) Error() string {
+	if e == nil || e.Description == "" {
+		return "registration: http_429"
+	}
+	return "registration: http_429: " + e.Description
+}
+
 func (e *RegistrationError) Error() string {
 	if e == nil {
 		return ""
@@ -427,6 +443,12 @@ func (c *RegistrationClient) doForm(ctx context.Context, domain string, form url
 	if err != nil {
 		return fmt.Errorf("registration: read body: %w", err)
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return &RegistrationRateLimitError{
+			RetryAfter:  parseRegistrationRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			Description: truncate(strings.TrimSpace(string(body)), 256),
+		}
+	}
 	if len(body) == 0 {
 		return &RegistrationError{
 			Code:        fmt.Sprintf("http_%d", resp.StatusCode),
@@ -450,6 +472,20 @@ func (c *RegistrationClient) doForm(ctx context.Context, domain string, form url
 		Code:        fmt.Sprintf("http_%d", resp.StatusCode),
 		Description: truncate(string(body), 256),
 	}
+}
+
+func parseRegistrationRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if deadline, err := http.ParseTime(value); err == nil && deadline.After(now) {
+		return deadline.Sub(now)
+	}
+	return 0
 }
 
 // decorateQRCodeURL appends the SDK-style telemetry params Lark expects

@@ -373,7 +373,10 @@ export function LarkAgentBindButton({
   // close the install entry point and link to the Bot's Lark app page where
   // scopes / display name / additional permissions are actually managed.
   const existing = listing?.installations.find(
-    (inst) => inst.agent_id === agentId && inst.status === "active",
+    (inst) =>
+      inst.status === "active" &&
+      (inst.agent_id === agentId ||
+        (inst.target_type === "squad" && inst.current_leader_id === agentId)),
   );
   if (existing) {
     return onShowConnectedDetails ? (
@@ -460,13 +463,17 @@ export function LarkAgentBindButton({
 export function LarkSquadBindButton({
   squadId,
   squadName,
+  leaderId,
 }: {
   squadId: string;
   squadName: string;
+  leaderId: string;
 }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
   const [dialogRegion, setDialogRegion] = useState<"feishu" | "lark" | null>(null);
+  const [adopting, setAdopting] = useState(false);
+  const qc = useQueryClient();
   const { data: listing } = useQuery({
     ...larkInstallationsOptions(wsId),
     enabled: !!wsId,
@@ -478,22 +485,63 @@ export function LarkSquadBindButton({
       installation.target_id === squadId,
   );
   if (existing) {
-    return <LarkAgentBotConnectedBadge installation={existing} className="min-w-64" />;
+    return <LarkAgentBotConnectedBadge installation={existing} className="w-full" />;
+  }
+  const leaderInstallation = listing?.installations.find(
+    (installation) =>
+      installation.status === "active" &&
+      installation.target_type !== "squad" &&
+      installation.agent_id === leaderId,
+  );
+  if (leaderInstallation) {
+    const adoptLeaderBot = async () => {
+      if (adopting) return;
+      setAdopting(true);
+      try {
+        await api.useLarkInstallationForSquad(wsId, leaderInstallation.id, squadId);
+        await qc.invalidateQueries({ queryKey: larkKeys.installations(wsId) });
+        toast.success(t(($) => $.lark.toast_squad_bot_connected));
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t(($) => $.lark.toast_squad_bot_connect_failed),
+        );
+      } finally {
+        setAdopting(false);
+      }
+    };
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full justify-center"
+        onClick={() => void adoptLeaderBot()}
+        disabled={adopting}
+      >
+        {adopting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="h-3.5 w-3.5" />}
+        {adopting
+          ? t(($) => $.lark.using_leader_bot)
+          : t(($) => $.lark.use_leader_bot)}
+      </Button>
+    );
   }
   if (listing?.install_supported !== true) return null;
   return (
     <>
-      <Button variant="outline" size="sm" onClick={() => setDialogRegion("feishu")}>
+      <Button className="w-full justify-center" variant="outline" size="sm" onClick={() => setDialogRegion("feishu")}>
         <ExternalLink className="h-3 w-3" />
         {t(($) => $.lark.bind_button_feishu)}
       </Button>
       {dialogRegion && (
         <LarkInstallDialog
           wsId={wsId}
-          agentId={squadId}
+          agentId={leaderId}
           agentName={squadName}
-          targetType="squad"
           region={dialogRegion}
+          onInstalled={(installationId) =>
+            api.useLarkInstallationForSquad(wsId, installationId, squadId)
+          }
           onClose={() => setDialogRegion(null)}
         />
       )}
@@ -718,6 +766,7 @@ export function LarkInstallDialog({
   agentName,
   targetType = "agent",
   region,
+  onInstalled,
   onClose,
 }: {
   wsId: string;
@@ -725,6 +774,7 @@ export function LarkInstallDialog({
   agentName?: string;
   targetType?: "agent" | "squad";
   region: "feishu" | "lark";
+  onInstalled?: (installationId: string) => Promise<void>;
   onClose: () => void;
 }) {
   const { t } = useT("settings");
@@ -816,6 +866,20 @@ export function LarkInstallDialog({
         if (cancelled) return;
         setStatus(res.status);
         if (res.status === "success") {
+          if (onInstalled && res.installation_id) {
+            try {
+              await onInstalled(res.installation_id);
+            } catch (error) {
+              // Registration itself succeeded, so leave the leader Bot in
+              // place and let the squad page offer the reuse action again.
+              // Starting another device flow here would create a duplicate.
+              toast.error(
+                error instanceof Error
+                  ? error.message
+                  : t(($) => $.lark.toast_squad_bot_connect_failed),
+              );
+            }
+          }
           await qc.invalidateQueries({ queryKey: larkKeys.installations(wsId) });
           toast.success(
             region === "lark"

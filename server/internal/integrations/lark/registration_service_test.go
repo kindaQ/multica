@@ -22,6 +22,18 @@ import (
 // require a real Postgres + sqlc-generated *db.Queries and are
 // covered by an integration test against the migration suite.
 
+func TestNextRegistrationRateLimitBackoff(t *testing.T) {
+	if got := nextRegistrationRateLimitBackoff(5*time.Second, 0); got != 10*time.Second {
+		t.Fatalf("first backoff: got %v want 10s", got)
+	}
+	if got := nextRegistrationRateLimitBackoff(20*time.Second, 45*time.Second); got != 45*time.Second {
+		t.Fatalf("Retry-After: got %v want 45s", got)
+	}
+	if got := nextRegistrationRateLimitBackoff(45*time.Second, 0); got != time.Minute {
+		t.Fatalf("capped backoff: got %v want 1m", got)
+	}
+}
+
 // TestRegistrationServiceConstructorValidatesDeps pins that every
 // required dependency surfaces as a constructor error rather than a
 // runtime panic inside BeginInstall — a half-init at startup would
