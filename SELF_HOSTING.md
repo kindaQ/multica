@@ -76,6 +76,7 @@ make selfhost
 By default it pulls the latest stable release images from GHCR. To build the backend/web from your current checkout instead, run `make selfhost-build`.
 If the selected GHCR tag has not been published yet, `make selfhost` now tells you to fall back to `make selfhost-build`.
 `make selfhost-build` uses local `multica-backend:dev` / `multica-web:dev` tags, so it does not overwrite the pulled `:latest` images.
+For a concise Chinese guide to building and starting from source, including the required Lark/Feishu configuration and agent daemon setup, see [从源码编译并启动 Multica Self-host](SELF_HOSTING_FROM_SOURCE.zh-CN.md).
 
 Once ready:
 
