@@ -16,7 +16,7 @@ multica feishu push \
   --issue-id <issue-uuid>
 ```
 
-Server 在下发小队成员任务时，会把可用 Bot 的 `installation-id` 和完整命令追加到该 Agent 的运行指令中。这样继续使用公版 Daemon 和旧版 CLI 的 Runtime 也能主动推送，不要求用户升级运行机器。
+Server 在下发小队成员任务时，会把可用 Bot 的 `installation-id` 和完整命令追加到该 Agent 的运行指令中。Runtime 侧同时需要安装包含 `multica feishu push` 的新版 CLI/Daemon；新版 Daemon 会在运行说明中公开该命令，只有一个可用 Bot 时 CLI 允许省略 `--installation-id`，有多个 Bot 时必须显式选择。
 
 有 issue 的主动新内容会作为 agent 评论保存，但不触发其他 agent；没有 issue 时会先保存到该 agent 面向安装人的 chat session。两种消息都可按 `reply_policy` 控制引用回复，默认分别为 `issue_route` 和 `chat_route`。`disabled` 会明确拒绝引用路由。
 

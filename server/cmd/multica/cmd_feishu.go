@@ -21,7 +21,7 @@ var feishuPushCmd = &cobra.Command{
 }
 
 func init() {
-	feishuPushCmd.Flags().String("installation-id", "", "Feishu installation ID (required)")
+	feishuPushCmd.Flags().String("installation-id", "", "Feishu installation ID (optional when exactly one Bot is available to this agent)")
 	feishuPushCmd.Flags().String("issue-id", "", "Optional issue ID used for quoted-reply routing")
 	feishuPushCmd.Flags().String("content", "", "Message content (required)")
 	feishuPushCmd.Flags().String("idempotency-key", "", "Stable retry key (required)")
@@ -37,17 +37,19 @@ func runFeishuPush(cmd *cobra.Command, _ []string) error {
 	installationID, _ := cmd.Flags().GetString("installation-id")
 	content, _ := cmd.Flags().GetString("content")
 	key, _ := cmd.Flags().GetString("idempotency-key")
-	if strings.TrimSpace(installationID) == "" || strings.TrimSpace(content) == "" || strings.TrimSpace(key) == "" {
-		return errors.New("--installation-id, --content, and --idempotency-key are required")
+	if strings.TrimSpace(content) == "" || strings.TrimSpace(key) == "" {
+		return errors.New("--content and --idempotency-key are required")
 	}
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
 	}
 	body := map[string]any{
-		"installation_id": installationID,
 		"content":         content,
 		"idempotency_key": key,
+	}
+	if strings.TrimSpace(installationID) != "" {
+		body["installation_id"] = installationID
 	}
 	if issueID, _ := cmd.Flags().GetString("issue-id"); strings.TrimSpace(issueID) != "" {
 		body["issue_id"] = issueID
