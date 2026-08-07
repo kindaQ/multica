@@ -99,9 +99,12 @@ type RouteResolution struct {
 	IssueID        pgtype.UUID
 	ChatSessionID  pgtype.UUID
 	RouteContextID pgtype.UUID
-	Handled        bool
-	Ignored        bool
-	Message        string
+	// InputText replaces the route directive with an inline message body. An
+	// empty value preserves the existing one-shot route command behavior.
+	InputText string
+	Handled   bool
+	Ignored   bool
+	Message   string
 }
 
 // RouteResolver applies reply routing and one-shot route context after the

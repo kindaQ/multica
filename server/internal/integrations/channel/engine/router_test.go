@@ -30,6 +30,19 @@ type fakeIdentity struct {
 	err error
 }
 
+type fakeRoute struct {
+	result RouteResolution
+	err    error
+}
+
+func (f *fakeRoute) ResolveRoute(_ context.Context, inst ResolvedInstallation, _ ResolvedIdentity, _ channel.InboundMessage) (RouteResolution, error) {
+	result := f.result
+	if !result.Installation.ID.Valid {
+		result.Installation = inst
+	}
+	return result, f.err
+}
+
 func (f *fakeIdentity) ResolveSender(_ context.Context, _ ResolvedInstallation, _ channel.InboundMessage) (ResolvedIdentity, error) {
 	return f.id, f.err
 }
@@ -340,6 +353,7 @@ type harness struct {
 	router  *Router
 	inst    *fakeInstaller
 	ident   *fakeIdentity
+	route   *fakeRoute
 	dedup   *fakeDedup
 	binder  *fakeBinder
 	audit   *fakeAuditor
@@ -356,6 +370,7 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{
 		inst:  &fakeInstaller{inst: activeResolved(t)},
 		ident: &fakeIdentity{id: ResolvedIdentity{UserID: uuidFromString(t, "44444444-4444-4444-4444-444444444444")}},
+		route: &fakeRoute{},
 		dedup: &fakeDedup{token: uuidFromString(t, "55555555-5555-5555-5555-555555555555")},
 		binder: &fakeBinder{
 			ensureID: uuidFromString(t, "66666666-6666-6666-6666-666666666666"),
@@ -376,6 +391,7 @@ func newHarness(t *testing.T) *harness {
 	h.router.Register(channel.TypeFeishu, ResolverSet{
 		Installation: h.inst,
 		Identity:     h.ident,
+		Route:        h.route,
 		Dedup:        h.dedup,
 		Session:      h.binder,
 		Audit:        h.audit,
@@ -393,6 +409,23 @@ func TestRouter_NoResolverSet_ReturnsError(t *testing.T) {
 	msg.Source.ChannelType = channel.Type("slack")
 	if err := h.router.Handle(context.Background(), msg); !errors.Is(err, ErrNoResolverSet) {
 		t.Fatalf("expected ErrNoResolverSet, got %v", err)
+	}
+}
+
+func TestRouter_UsesInlineRouteMessageAsAgentInput(t *testing.T) {
+	h := newHarness(t)
+	h.media.noMedia = true
+	h.route.result = RouteResolution{InputText: "请检查登录失败的问题"}
+	msg := p2pMessage(t)
+	msg.Text = "/route --agent @developer 请检查登录失败的问题"
+	msg.CommandText = msg.Text
+
+	if err := h.router.Handle(context.Background(), msg); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	appended := h.binder.appendedParams().Message
+	if appended.Text != "请检查登录失败的问题" || appended.CommandText != "请检查登录失败的问题" {
+		t.Fatalf("appended message = %#v", appended)
 	}
 }
 

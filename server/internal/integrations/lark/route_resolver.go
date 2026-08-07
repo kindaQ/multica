@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -165,6 +166,15 @@ func (r *RouteResolver) handleCommand(ctx context.Context, result engine.RouteRe
 		return result, fmt.Errorf("save route: %w", err)
 	}
 	_ = sender // retained in the signature for future per-issue authorization.
+	if cmd.Message != "" {
+		result.Handled = false
+		result, err = r.applyRoute(ctx, result, row.IssueID, row.AgentID, row.ID)
+		if err != nil || result.Handled {
+			return result, err
+		}
+		result.InputText = cmd.Message
+		return result, nil
+	}
 	result.Message = routeSummary(row.IssueID, row.AgentID, row.ExpiresAt.Time)
 	return result, nil
 }
@@ -317,10 +327,13 @@ func (r *RouteResolver) agentAllowed(ctx context.Context, inst engine.ResolvedIn
 }
 
 type routeCommand struct {
-	Action string
-	Issue  string
-	Agent  string
+	Action  string
+	Issue   string
+	Agent   string
+	Message string
 }
+
+var routeTokenPattern = regexp.MustCompile(`\S+`)
 
 func isRouteCommand(text string) bool {
 	fields := strings.Fields(text)
@@ -328,36 +341,48 @@ func isRouteCommand(text string) bool {
 }
 
 func parseRouteCommand(text string) (routeCommand, error) {
-	fields := strings.Fields(text)
-	if len(fields) == 0 || !strings.EqualFold(fields[0], "/route") {
+	spans := routeTokenPattern.FindAllStringIndex(text, -1)
+	token := func(index int) string {
+		return text[spans[index][0]:spans[index][1]]
+	}
+	if len(spans) == 0 || !strings.EqualFold(token(0), "/route") {
 		return routeCommand{}, errors.New("not a route command")
 	}
-	if len(fields) == 1 {
+	if len(spans) == 1 {
 		return routeCommand{Action: "help"}, nil
 	}
-	if len(fields) == 2 {
-		action := strings.ToLower(fields[1])
+	if len(spans) == 2 {
+		action := strings.ToLower(token(1))
 		if action == "help" || action == "status" || action == "cancel" {
 			return routeCommand{Action: action}, nil
 		}
 	}
 	cmd := routeCommand{Action: "set"}
-	for i := 1; i < len(fields); i++ {
-		switch fields[i] {
+	for i := 1; i < len(spans); i++ {
+		switch token(i) {
 		case "--issue":
-			if i+1 >= len(fields) {
+			if i+1 >= len(spans) || strings.HasPrefix(token(i+1), "--") {
 				return routeCommand{}, errors.New("--issue requires a value")
 			}
 			i++
-			cmd.Issue = fields[i]
+			cmd.Issue = token(i)
 		case "--agent":
-			if i+1 >= len(fields) {
+			if i+1 >= len(spans) || strings.HasPrefix(token(i+1), "--") {
 				return routeCommand{}, errors.New("--agent requires a value")
 			}
 			i++
-			cmd.Agent = fields[i]
+			cmd.Agent = token(i)
+		case "--":
+			if i+1 < len(spans) {
+				cmd.Message = strings.TrimSpace(text[spans[i+1][0]:])
+			}
+			i = len(spans)
 		default:
-			return routeCommand{}, fmt.Errorf("unknown route argument %q", fields[i])
+			if strings.HasPrefix(token(i), "--") {
+				return routeCommand{}, fmt.Errorf("unknown route argument %q", token(i))
+			}
+			cmd.Message = strings.TrimSpace(text[spans[i][0]:])
+			i = len(spans)
 		}
 	}
 	if cmd.Issue == "" && cmd.Agent == "" {
@@ -386,7 +411,8 @@ func routeSummary(issueID, agentID pgtype.UUID, expiresAt time.Time) string {
 
 func routeHelpText() string {
 	return strings.Join([]string{
-		"Route the next accepted message:",
+		"Route this message, or omit message text to route the next one:",
+		"/route --issue MUL-123 --agent @AgentName message text",
 		"/route --issue MUL-123 --agent @AgentName",
 		"/route --issue MUL-123",
 		"/route --agent @AgentName",

@@ -340,6 +340,10 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 		inst = resolved.Installation
 		routeContextID = resolved.RouteContextID
 		routedChatSessionID = resolved.ChatSessionID
+		if resolved.InputText != "" {
+			msg.Text = resolved.InputText
+			msg.CommandText = resolved.InputText
+		}
 		if resolved.Ignored {
 			return r.drop(ctx, set, msg, inst.ID, DropReasonNotAddressedInGroup), finalizeMark, nil
 		}
