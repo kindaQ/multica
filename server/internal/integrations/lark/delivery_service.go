@@ -147,20 +147,18 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 		}
 	}
 	footer := proactiveMessageFooter(agent.Name, issueIdentifier)
+	outboundContent := p.Content
+	outboundPost := p.Post
 	if hasPost {
-		p.Post, err = appendFooterToPost(p.Post, footer)
+		outboundPost, err = appendFooterToPost(p.Post, footer)
 		if err != nil {
 			return ProactivePushResult{}, err
 		}
-		if len(p.Post) > 20*1024 {
+		if len(outboundPost) > 20*1024 {
 			return ProactivePushResult{}, errors.New("Feishu post exceeds 20KB")
 		}
-		p.Content, err = flattenOutboundPost(p.Post)
-		if err != nil {
-			return ProactivePushResult{}, err
-		}
 	} else {
-		p.Content += "\n\n──────────\n" + footer
+		outboundContent = appendMessageFooter(p.Content, footer)
 	}
 	binding, err := s.q.GetChannelUserBindingForMulticaUser(ctx, db.GetChannelUserBindingForMulticaUserParams{
 		InstallationID: inst.ID, MulticaUserID: inst.InstallerUserID,
@@ -254,11 +252,11 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 		if !ok {
 			return ProactivePushResult{}, errors.New("feishu client does not support rich-text posts")
 		}
-		messageID, err = sender.SendPostMessage(ctx, SendPostParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), PostJSON: string(p.Post)})
-	} else if containsMarkdown(p.Content) {
-		messageID, err = s.client.SendMarkdownCard(ctx, SendMarkdownCardParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), Markdown: p.Content})
+		messageID, err = sender.SendPostMessage(ctx, SendPostParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), PostJSON: string(outboundPost)})
+	} else if containsMarkdown(outboundContent) {
+		messageID, err = s.client.SendMarkdownCard(ctx, SendMarkdownCardParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), Markdown: outboundContent})
 	} else {
-		messageID, err = s.client.SendTextMessage(ctx, SendTextParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), Text: p.Content})
+		messageID, err = s.client.SendTextMessage(ctx, SendTextParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), Text: outboundContent})
 	}
 	if err != nil {
 		_, _ = s.q.MarkChannelDeliveryMessageFailed(ctx, db.MarkChannelDeliveryMessageFailedParams{ID: message.ID, LastError: textOrNull("send_failed")})
@@ -328,6 +326,10 @@ func proactiveMessageFooter(agentName, issueIdentifier string) string {
 		footer += " (issue " + issueIdentifier + ")"
 	}
 	return footer
+}
+
+func appendMessageFooter(content, footer string) string {
+	return strings.TrimSpace(content) + "\n\n──────────\n" + footer
 }
 
 func proactiveChatTitle(agentName string) string {

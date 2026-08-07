@@ -27,6 +27,10 @@ type fakePatcherQueries struct {
 	installationErr     error
 	agent               db.Agent
 	agentErr            error
+	issue               db.Issue
+	issueErr            error
+	workspace           db.Workspace
+	workspaceErr        error
 	card                OutboundCardMessage
 	cardErr             error
 	created             []CreateOutboundCardMessageParams
@@ -45,6 +49,12 @@ func (f *fakePatcherQueries) GetChatSession(ctx context.Context, id pgtype.UUID)
 }
 func (f *fakePatcherQueries) GetAgent(ctx context.Context, id pgtype.UUID) (db.Agent, error) {
 	return f.agent, f.agentErr
+}
+func (f *fakePatcherQueries) GetIssue(ctx context.Context, id pgtype.UUID) (db.Issue, error) {
+	return f.issue, f.issueErr
+}
+func (f *fakePatcherQueries) GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error) {
+	return f.workspace, f.workspaceErr
 }
 func (f *fakePatcherQueries) GetLarkInstallation(ctx context.Context, id pgtype.UUID) (Installation, error) {
 	return f.installation, f.installationErr
@@ -223,7 +233,7 @@ func TestPatcherSendsSealedChannelTaskReply(t *testing.T) {
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if len(api.textSent) != 1 || api.textSent[0].Text != "channel answer" {
+	if len(api.textSent) != 1 || api.textSent[0].Text != appendMessageFooter("channel answer", "from TestAgent") {
 		t.Fatalf("sealed channel reply must reach Lark; textSent=%+v", api.textSent)
 	}
 }
@@ -249,7 +259,7 @@ func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 		t.Fatalf("expected one SendTextMessage call on ChatDone; got %d", len(api.textSent))
 	}
 	got := api.textSent[0]
-	if got.Text != "Hello! I'm cc, a coding agent…" {
+	if got.Text != appendMessageFooter("Hello! I'm cc, a coding agent…", "from TestAgent") {
 		t.Errorf("text mismatch: got %q", got.Text)
 	}
 	if got.ChatID != ChatID(q.binding.ChannelChatID) {
@@ -261,6 +271,25 @@ func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 	if len(api.sent) != 0 || len(api.patched) != 0 {
 		t.Errorf("ChatDone must NOT send / patch any card; got sent=%d patched=%d",
 			len(api.sent), len(api.patched))
+	}
+}
+
+func TestPatcherDeliveryFooterIncludesIssueIdentifier(t *testing.T) {
+	p, q, _ := newTestPatcher(t)
+	workspaceID := uuidFromString(t, "11111111-2222-3333-4444-555555555555")
+	agentID := uuidFromString(t, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	issueID := uuidFromString(t, "99999999-8888-7777-6666-555555555555")
+	q.agent = db.Agent{Name: "developer"}
+	q.issue = db.Issue{ID: issueID, WorkspaceID: workspaceID, Number: 4}
+	q.workspace = db.Workspace{ID: workspaceID, IssuePrefix: "PEN"}
+
+	got := p.deliveryFooter(context.Background(), db.ChannelDelivery{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		IssueID:     issueID,
+	})
+	if got != "from developer (issue PEN-4)" {
+		t.Fatalf("deliveryFooter() = %q", got)
 	}
 }
 
@@ -292,8 +321,8 @@ func TestPatcherRoutesMarkdownReplyToCard(t *testing.T) {
 		t.Fatalf("expected one SendMarkdownCard call; got %d", len(api.mdCardSent))
 	}
 	got := api.mdCardSent[0]
-	if got.Markdown != body {
-		t.Errorf("markdown body must be forwarded verbatim; got %q", got.Markdown)
+	if got.Markdown != appendMessageFooter(body, "from TestAgent") {
+		t.Errorf("markdown body must include the agent footer; got %q", got.Markdown)
 	}
 	if got.ChatID != ChatID(q.binding.ChannelChatID) {
 		t.Errorf("chat_id mismatch: got %q want %q", got.ChatID, q.binding.ChannelChatID)
@@ -528,7 +557,7 @@ func TestPatcherIgnoresEventTaskCompletedForChatTasks(t *testing.T) {
 	if len(api.textSent) != 1 {
 		t.Fatalf("exactly one text send expected (ChatDone); EventTaskCompleted must be ignored. Got %d sends", len(api.textSent))
 	}
-	if api.textSent[0].Text != "Hello! I'm cc, a coding agent…" {
+	if api.textSent[0].Text != appendMessageFooter("Hello! I'm cc, a coding agent…", "from TestAgent") {
 		t.Errorf("text content mismatch; got %q", api.textSent[0].Text)
 	}
 	if len(api.sent) != 0 || len(api.patched) != 0 {

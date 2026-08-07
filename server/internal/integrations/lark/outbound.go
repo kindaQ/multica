@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -164,6 +166,11 @@ type deliveryQueries interface {
 	MarkChannelDeliveryMessageSent(context.Context, db.MarkChannelDeliveryMessageSentParams) (int64, error)
 	MarkChannelDeliveryMessageFailed(context.Context, db.MarkChannelDeliveryMessageFailedParams) (int64, error)
 	SetChannelDeliveryStatus(context.Context, db.SetChannelDeliveryStatusParams) (int64, error)
+}
+
+type issueFooterQueries interface {
+	GetIssue(context.Context, pgtype.UUID) (db.Issue, error)
+	GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error)
 }
 
 // CredentialsResolver decrypts an installation's app_secret for the
@@ -347,7 +354,7 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 		return err
 	}
 
-	agent, agentErr := p.queries.GetAgent(ctx, inst.AgentID)
+	agent, agentErr := p.queries.GetAgent(ctx, task.AgentID)
 	agentName := ""
 	if agentErr == nil {
 		agentName = agent.Name
@@ -371,9 +378,9 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 			if deliveryErr != nil {
 				return deliveryErr
 			}
-			return p.sendDeliveryMessage(ctx, dq, delivery, pgtype.UUID{}, "chat:done", content)
+			return p.sendDeliveryMessage(ctx, dq, delivery, pgtype.UUID{}, "chat:done", content, proactiveMessageFooter(agentName, ""))
 		}
-		return p.sendChatReply(ctx, creds, binding, e.Payload)
+		return p.sendChatReply(ctx, creds, binding, e.Payload, proactiveMessageFooter(agentName, ""))
 	case protocol.EventTaskFailed:
 		return p.fail(ctx, creds, binding, taskID, agentName, e.Payload)
 	}
@@ -427,7 +434,7 @@ func (p *Patcher) processIssueComment(ctx context.Context, e events.Event) error
 		if delivery.RouteType != "issue" || delivery.Status == "cancelled" {
 			continue
 		}
-		if err := p.sendDeliveryMessage(ctx, dq, delivery, comment.id, "comment:"+uuidString(comment.id), comment.content); err != nil {
+		if err := p.sendDeliveryMessage(ctx, dq, delivery, comment.id, "comment:"+uuidString(comment.id), comment.content, p.deliveryFooter(ctx, delivery)); err != nil {
 			return err
 		}
 	}
@@ -470,7 +477,7 @@ func (p *Patcher) processIssueTerminal(ctx context.Context, taskID pgtype.UUID, 
 			continue
 		}
 		if terminalText != "" {
-			if err := p.sendDeliveryMessage(ctx, dq, delivery, pgtype.UUID{}, "terminal:"+reason, terminalText); err != nil {
+			if err := p.sendDeliveryMessage(ctx, dq, delivery, pgtype.UUID{}, "terminal:"+reason, terminalText, ""); err != nil {
 				return err
 			}
 		}
@@ -522,7 +529,7 @@ func stringValue(v any) string {
 	return ""
 }
 
-func (p *Patcher) sendDeliveryMessage(ctx context.Context, dq deliveryQueries, delivery db.ChannelDelivery, commentID pgtype.UUID, key, content string) error {
+func (p *Patcher) sendDeliveryMessage(ctx context.Context, dq deliveryQueries, delivery db.ChannelDelivery, commentID pgtype.UUID, key, content, footer string) error {
 	message, err := dq.CreateChannelDeliveryMessage(ctx, db.CreateChannelDeliveryMessageParams{
 		DeliveryID: delivery.ID, SourceCommentID: commentID, IdempotencyKey: key,
 	})
@@ -538,6 +545,9 @@ func (p *Patcher) sendDeliveryMessage(ctx context.Context, dq deliveryQueries, d
 	}
 	if InstallationStatus(inst.Status) != InstallationActive {
 		return nil
+	}
+	if footer != "" {
+		content = appendMessageFooter(content, footer)
 	}
 	creds, err := p.installationCredentials(inst)
 	if err != nil {
@@ -569,6 +579,29 @@ func (p *Patcher) sendDeliveryMessage(ctx context.Context, dq deliveryQueries, d
 	return nil
 }
 
+func (p *Patcher) deliveryFooter(ctx context.Context, delivery db.ChannelDelivery) string {
+	agentName := ""
+	if delivery.AgentID.Valid {
+		if agent, err := p.queries.GetAgent(ctx, delivery.AgentID); err == nil {
+			agentName = agent.Name
+		}
+	}
+	issueIdentifier := ""
+	if delivery.IssueID.Valid {
+		if q, ok := p.queries.(issueFooterQueries); ok {
+			if issue, err := q.GetIssue(ctx, delivery.IssueID); err == nil && issue.WorkspaceID == delivery.WorkspaceID {
+				issueIdentifier = "#" + strconv.Itoa(int(issue.Number))
+				if workspace, err := q.GetWorkspace(ctx, delivery.WorkspaceID); err == nil {
+					if prefix := strings.TrimSpace(workspace.IssuePrefix); prefix != "" {
+						issueIdentifier = prefix + "-" + strconv.Itoa(int(issue.Number))
+					}
+				}
+			}
+		}
+	}
+	return proactiveMessageFooter(agentName, issueIdentifier)
+}
+
 // sendChatReply turns ChatDonePayload.Content into a Lark message.
 // The wire shape is chosen per-reply based on whether the body
 // contains any markdown syntax:
@@ -591,11 +624,12 @@ func (p *Patcher) sendDeliveryMessage(ctx context.Context, dq deliveryQueries, d
 // the task without producing visible output, which only happens for
 // edge cases like a chat task that just acknowledged a system event;
 // not emitting a message there is the right product call.
-func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentials, binding ChatSessionBinding, payload any) error {
+func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentials, binding ChatSessionBinding, payload any, footer string) error {
 	content := chatDoneContent(payload)
 	if content == "" {
 		return nil
 	}
+	content = appendMessageFooter(content, footer)
 	target := threadReplyTarget(binding)
 	if containsMarkdown(content) {
 		return sendWithThreadFallback(p.cfg.Logger, "send markdown card", target, func(t ReplyTarget) error {

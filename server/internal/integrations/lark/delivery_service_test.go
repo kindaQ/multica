@@ -82,6 +82,17 @@ func TestProactiveMessageFooter(t *testing.T) {
 	}
 }
 
+func TestAppendMessageFooter(t *testing.T) {
+	got := appendMessageFooter("正文\n", "from tester")
+	want := "正文\n\n──────────\nfrom tester"
+	if got != want {
+		t.Fatalf("appendMessageFooter() = %q, want %q", got, want)
+	}
+	if containsMarkdown(got) {
+		t.Fatal("the source footer must not turn a plain chat reply into a markdown card")
+	}
+}
+
 func TestProactiveChatTitle(t *testing.T) {
 	if got := proactiveChatTitle("developer"); got != "developer · Feishu proactive chat" {
 		t.Fatalf("proactiveChatTitle() = %q", got)

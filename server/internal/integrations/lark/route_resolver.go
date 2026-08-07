@@ -412,10 +412,10 @@ func routeSummary(issueID, agentID pgtype.UUID, expiresAt time.Time) string {
 func routeHelpText() string {
 	return strings.Join([]string{
 		"Route this message, or omit message text to route the next one:",
-		"/route --issue MUL-123 --agent @AgentName message text",
-		"/route --issue MUL-123 --agent @AgentName",
+		"/route --issue MUL-123 --agent AgentName message text",
+		"/route --issue MUL-123 --agent AgentName",
 		"/route --issue MUL-123",
-		"/route --agent @AgentName",
+		"/route --agent AgentName",
 		"/route status",
 		"/route cancel",
 	}, "\n")
