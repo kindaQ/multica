@@ -152,7 +152,7 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 			} else if errors.Is(previousErr, pgx.ErrNoRows) {
 				session, sessionErr := s.q.CreateChatSession(ctx, db.CreateChatSessionParams{
 					WorkspaceID: p.WorkspaceID, AgentID: p.AgentID, CreatorID: inst.InstallerUserID,
-					Title: "Feishu proactive chat",
+					Title: proactiveChatTitle(agent.Name),
 				})
 				if sessionErr != nil {
 					return ProactivePushResult{}, fmt.Errorf("create proactive chat session: %w", sessionErr)
@@ -220,6 +220,14 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 	}
 	_, _ = s.q.SetChannelDeliveryStatus(ctx, db.SetChannelDeliveryStatusParams{ID: delivery.ID, Status: "sent", TerminalReason: textOrNull("sent")})
 	return ProactivePushResult{InstallationID: inst.ID, DeliveryID: delivery.ID, MessageID: messageID}, nil
+}
+
+func proactiveChatTitle(agentName string) string {
+	agentName = strings.TrimSpace(agentName)
+	if agentName == "" {
+		return "Feishu proactive chat"
+	}
+	return agentName + " · Feishu proactive chat"
 }
 
 func selectSingleAccessibleInstallation(installations []Installation) (Installation, error) {

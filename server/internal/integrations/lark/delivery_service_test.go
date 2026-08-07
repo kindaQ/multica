@@ -34,3 +34,15 @@ func TestSelectSingleAccessibleInstallation(t *testing.T) {
 		}
 	})
 }
+
+func TestProactiveChatTitle(t *testing.T) {
+	if got := proactiveChatTitle("developer"); got != "developer · Feishu proactive chat" {
+		t.Fatalf("proactiveChatTitle() = %q", got)
+	}
+	if got := proactiveChatTitle("  tester  "); got != "tester · Feishu proactive chat" {
+		t.Fatalf("proactiveChatTitle() trims name = %q", got)
+	}
+	if got := proactiveChatTitle("  "); got != "Feishu proactive chat" {
+		t.Fatalf("proactiveChatTitle() fallback = %q", got)
+	}
+}
