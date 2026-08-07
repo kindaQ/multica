@@ -193,9 +193,10 @@ func (r *LarkOutcomeReplier) Reply(ctx context.Context, inst Installation, msg I
 	case OutcomeIngested:
 		// The agent's chat reply itself goes through the Patcher. An /issue
 		// command gets an immediate product result: either the newly created
-		// issue or the active duplicate that blocked it. Gate on IssueID.Valid
-		// so a plain chat message stays silent here.
-		if res.IssueID.Valid {
+		// issue or the active duplicate that blocked it. Existing-issue routes
+		// also carry IssueID, so only the issue number populated by /issue may
+		// trigger this confirmation.
+		if res.IssueNumber > 0 {
 			if err := r.sendIssueOutcome(ctx, inst, msg, res); err != nil {
 				r.log.Warn("lark outcome replier: issue outcome reply failed",
 					"installation_id", uuidString(inst.ID),

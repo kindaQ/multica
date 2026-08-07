@@ -260,6 +260,9 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 
 var trivialDoneMarkers = []string{
 	"done",
+	"no reply needed",
+	"no response needed",
+	"pure acknowledgment — no work produced this turn, so no reply warranted",
 	"готово",
 	"готова",
 	"сделано",

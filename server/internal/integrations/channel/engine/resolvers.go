@@ -95,10 +95,11 @@ type ResolvedIdentity struct {
 // a control command or validation response that must be acknowledged without
 // creating a chat message or agent task.
 type RouteResolution struct {
-	Installation   ResolvedInstallation
-	IssueID        pgtype.UUID
-	ChatSessionID  pgtype.UUID
-	RouteContextID pgtype.UUID
+	Installation    ResolvedInstallation
+	IssueID         pgtype.UUID
+	ParentCommentID pgtype.UUID
+	ChatSessionID   pgtype.UUID
+	RouteContextID  pgtype.UUID
 	// InputText replaces the route directive with an inline message body. An
 	// empty value preserves the existing one-shot route command behavior.
 	InputText string
@@ -114,12 +115,13 @@ type RouteResolver interface {
 }
 
 type IssueIngressParams struct {
-	Installation   ResolvedInstallation
-	Sender         ResolvedIdentity
-	Message        channel.InboundMessage
-	IssueID        pgtype.UUID
-	RouteContextID pgtype.UUID
-	ClaimToken     pgtype.UUID
+	Installation    ResolvedInstallation
+	Sender          ResolvedIdentity
+	Message         channel.InboundMessage
+	IssueID         pgtype.UUID
+	ParentCommentID pgtype.UUID
+	RouteContextID  pgtype.UUID
+	ClaimToken      pgtype.UUID
 }
 
 type IssueIngressResult struct {

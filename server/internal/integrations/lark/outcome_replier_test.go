@@ -456,6 +456,33 @@ func TestLarkOutcomeReplierOutcomeIngestedSilentWithoutIssue(t *testing.T) {
 	}
 }
 
+func TestLarkOutcomeReplierOutcomeIngestedSilentForExistingIssueRoute(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	stub := &stubAPIClientWithRecorder{configured: true}
+	rep := NewLarkOutcomeReplier(OutcomeReplierConfig{
+		APIClient:   stub,
+		BindingSvc:  &BindingTokenService{},
+		Credentials: stubCredentialsResolver{secret: "s"},
+		Queries:     stubReplierQueries{},
+		AppURL:      "https://multica.test",
+		Logger:      log,
+	})
+
+	inst := Installation{AppID: "cli_x"}
+	inst.ID = mustUUID("11111111-1111-1111-1111-111111111111")
+	rep.Reply(context.Background(), inst, InboundMessage{ChatID: "oc_chat"}, DispatchResult{
+		Outcome: OutcomeIngested,
+		IssueID: mustUUID("22222222-2222-2222-2222-222222222222"),
+	})
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.textOut) != 0 {
+		t.Fatalf("existing issue route must not send an issue-created confirmation; got %d messages", len(stub.textOut))
+	}
+}
+
 // threadedInboundMsg builds an inbound message that originated inside a
 // Lark topic, so the replier targets the thread (and can fall back).
 func threadedInboundMsg(chatID ChatID) InboundMessage {

@@ -12,6 +12,9 @@ func TestIsTrivialDoneOutput(t *testing.T) {
 	}{
 		{"plain english", "done", true},
 		{"english punctuation", " Done. ", true},
+		{"no reply needed", "No reply needed.", true},
+		{"no response needed", "No response needed", true},
+		{"pure acknowledgment", "Pure acknowledgment — no work produced this turn, so no reply warranted.", true},
 		{"russian", "Готово!", true},
 		{"russian feminine", "готова…", true},
 		{"russian done", "Сделано", true},
@@ -19,6 +22,7 @@ func TestIsTrivialDoneOutput(t *testing.T) {
 		{"japanese", "完了。", true},
 		{"not only marker", "done, see PR", false},
 		{"not acknowledgement", "好的", false},
+		{"real no reply answer", "No reply needed from the API client; use the webhook instead.", false},
 		{"real answer", "I fixed the issue", false},
 	}
 

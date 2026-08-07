@@ -361,12 +361,13 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 				return Result{}, finalizeRelease, errors.New("channel router: issue route selected without issue ingester")
 			}
 			ingested, ingestErr := set.Issue.IngestIssueMessage(ctx, IssueIngressParams{
-				Installation:   inst,
-				Sender:         identity,
-				Message:        msg,
-				IssueID:        resolved.IssueID,
-				RouteContextID: resolved.RouteContextID,
-				ClaimToken:     claimToken,
+				Installation:    inst,
+				Sender:          identity,
+				Message:         msg,
+				IssueID:         resolved.IssueID,
+				ParentCommentID: resolved.ParentCommentID,
+				RouteContextID:  resolved.RouteContextID,
+				ClaimToken:      claimToken,
 			})
 			if ingestErr != nil {
 				return Result{}, finalizeRelease, fmt.Errorf("ingest issue message: %w", ingestErr)

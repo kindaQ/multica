@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -48,13 +52,27 @@ func (i *IssueIngester) IngestIssueMessage(ctx context.Context, p engine.IssueIn
 	if issue.WorkspaceID != p.Installation.WorkspaceID {
 		return engine.IssueIngressResult{}, errors.New("issue does not belong to installation workspace")
 	}
+	parentCommentID := p.ParentCommentID
+	if parentCommentID.Valid {
+		parent, parentErr := qtx.GetComment(ctx, parentCommentID)
+		switch {
+		case errors.Is(parentErr, pgx.ErrNoRows):
+			parentCommentID = pgtype.UUID{}
+		case parentErr != nil:
+			return engine.IssueIngressResult{}, fmt.Errorf("load reply parent comment: %w", parentErr)
+		case parent.IssueID != issue.ID || parent.WorkspaceID != issue.WorkspaceID:
+			parentCommentID = pgtype.UUID{}
+		}
+	}
+	content := issueInboundCommentContent(p.Message)
 	comment, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
 		AuthorType:  "member",
 		AuthorID:    p.Sender.UserID,
-		Content:     p.Message.Text,
+		Content:     content,
 		Type:        "comment",
+		ParentID:    parentCommentID,
 	})
 	if err != nil {
 		return engine.IssueIngressResult{}, fmt.Errorf("create member comment: %w", err)
@@ -109,6 +127,13 @@ func (i *IssueIngester) IngestIssueMessage(ctx context.Context, p engine.IssueIn
 	return engine.IssueIngressResult{CommentID: comment.ID, TaskID: task.ID, DedupMarked: p.ClaimToken.Valid}, nil
 }
 
+func issueInboundCommentContent(message channel.InboundMessage) string {
+	if content := strings.TrimSpace(message.CommandText); content != "" {
+		return content
+	}
+	return message.Text
+}
+
 func (i *IssueIngester) publishCommentCreated(issue db.Issue, comment db.Comment) {
 	if i.bus == nil {
 		return
@@ -126,6 +151,7 @@ func (i *IssueIngester) publishCommentCreated(issue db.Issue, comment db.Comment
 				"author_id":   util.UUIDToString(comment.AuthorID),
 				"content":     comment.Content,
 				"type":        comment.Type,
+				"parent_id":   util.UUIDToPtr(comment.ParentID),
 				"created_at":  comment.CreatedAt.Time.UTC().Format(time.RFC3339),
 			},
 			"issue_title":         issue.Title,

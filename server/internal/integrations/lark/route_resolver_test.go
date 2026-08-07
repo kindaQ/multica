@@ -3,7 +3,9 @@ package lark
 import (
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestParseRouteCommand(t *testing.T) {
@@ -52,6 +54,34 @@ func TestRouteConversationKeyScopesTopics(t *testing.T) {
 	base.Source.ThreadID = "omt_topic"
 	if got := routeConversationKey(base); got != "oc_group:omt_topic" {
 		t.Fatalf("topic key = %q", got)
+	}
+}
+
+func TestQuotedDeliverySourceCommentID(t *testing.T) {
+	sourceCommentID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	messages := []db.ChannelDeliveryMessage{
+		{Status: "failed", ChannelMessageID: pgtype.Text{String: "om_reply", Valid: true}, SourceCommentID: pgtype.UUID{Bytes: [16]byte{2}, Valid: true}},
+		{Status: "sent", ChannelMessageID: pgtype.Text{String: "om_reply", Valid: true}, SourceCommentID: sourceCommentID},
+	}
+	if got := quotedDeliverySourceCommentID(messages, "om_reply"); got != sourceCommentID {
+		t.Fatalf("quotedDeliverySourceCommentID() = %v, want %v", got, sourceCommentID)
+	}
+	if got := quotedDeliverySourceCommentID(messages, "om_missing"); got.Valid {
+		t.Fatalf("missing message returned parent %v", got)
+	}
+}
+
+func TestIssueInboundCommentContentPrefersUserCommandText(t *testing.T) {
+	message := channel.InboundMessage{
+		Text:        "<quoted_message>原消息全文</quoted_message>\n\n哈哈 好笑",
+		CommandText: "哈哈 好笑",
+	}
+	if got := issueInboundCommentContent(message); got != "哈哈 好笑" {
+		t.Fatalf("issueInboundCommentContent() = %q", got)
+	}
+	message.CommandText = ""
+	if got := issueInboundCommentContent(message); got != message.Text {
+		t.Fatalf("fallback content = %q, want %q", got, message.Text)
 	}
 }
 

@@ -48,6 +48,11 @@ func (r *RouteResolver) ResolveRoute(ctx context.Context, inst engine.ResolvedIn
 			ChannelMessageID: textOrNull(msg.ReplyTo.MessageID),
 		})
 		if err == nil {
+			messages, messageErr := r.q.ListChannelDeliveryMessages(ctx, delivery.ID)
+			if messageErr != nil {
+				return result, fmt.Errorf("list quoted delivery messages: %w", messageErr)
+			}
+			result.ParentCommentID = quotedDeliverySourceCommentID(messages, msg.ReplyTo.MessageID)
 			if delivery.ReplyPolicy == "disabled" {
 				result.Handled = true
 				result.Message = "这条通知不接受回复；请使用 /route 指定目标。"
@@ -91,6 +96,15 @@ func (r *RouteResolver) ResolveRoute(ctx context.Context, inst engine.ResolvedIn
 		return result, fmt.Errorf("load pending route: %w", err)
 	}
 	return r.applyRoute(ctx, result, selected.IssueID, selected.AgentID, selected.ID)
+}
+
+func quotedDeliverySourceCommentID(messages []db.ChannelDeliveryMessage, channelMessageID string) pgtype.UUID {
+	for _, message := range messages {
+		if message.Status == "sent" && message.ChannelMessageID.Valid && message.ChannelMessageID.String == channelMessageID {
+			return message.SourceCommentID
+		}
+	}
+	return pgtype.UUID{}
 }
 
 func (r *RouteResolver) handleCommand(ctx context.Context, result engine.RouteResolution, sender engine.ResolvedIdentity, msg channel.InboundMessage, text string) (engine.RouteResolution, error) {
