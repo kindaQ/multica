@@ -584,11 +584,12 @@ func (h *Handler) GetLarkInstallStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type createLarkDeliveryRequest struct {
-	InstallationID string `json:"installation_id"`
-	IssueID        string `json:"issue_id,omitempty"`
-	Content        string `json:"content"`
-	IdempotencyKey string `json:"idempotency_key"`
-	ReplyPolicy    string `json:"reply_policy,omitempty"`
+	InstallationID string          `json:"installation_id"`
+	IssueID        string          `json:"issue_id,omitempty"`
+	Content        string          `json:"content"`
+	Post           json.RawMessage `json:"post,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	ReplyPolicy    string          `json:"reply_policy,omitempty"`
 }
 
 // CreateLarkDelivery is intentionally agent-authenticated: resolveActor only
@@ -639,7 +640,7 @@ func (h *Handler) CreateLarkDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.LarkDelivery.Push(r.Context(), lark.ProactivePushParams{
 		WorkspaceID: workspaceUUID, InstallationID: installationID, AgentID: agentID,
-		IssueID: issueID, Content: body.Content, IdempotencyKey: body.IdempotencyKey,
+		IssueID: issueID, Content: body.Content, Post: body.Post, IdempotencyKey: body.IdempotencyKey,
 		ReplyPolicy: body.ReplyPolicy,
 	})
 	if err != nil {

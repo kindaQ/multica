@@ -369,6 +369,39 @@ func (c *httpAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (
 	return resp.Data.MessageID, nil
 }
 
+// SendPostMessage sends a locale-wrapped Feishu rich-text post without
+// converting it to an interactive card.
+func (c *httpAPIClient) SendPostMessage(ctx context.Context, p SendPostParams) (string, error) {
+	if p.ChatID == "" && p.OpenID == "" {
+		return "", errors.New("lark http client: missing chat_id or open_id")
+	}
+	if p.PostJSON == "" || !json.Valid([]byte(p.PostJSON)) {
+		return "", errors.New("lark http client: missing or invalid post json")
+	}
+	token, err := c.tenantAccessToken(ctx, p.InstallationID)
+	if err != nil {
+		return "", err
+	}
+	path, body := outboundMessageRequest(p.ChatID, p.OpenID, "post", p.PostJSON, p.ReplyTarget)
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			MessageID string `json:"message_id"`
+		} `json:"data"`
+	}
+	if err := c.doJSON(ctx, c.resolveBaseURL(p.InstallationID), http.MethodPost, path, token, body, &resp); err != nil {
+		return "", fmt.Errorf("lark http client: send post message: %w", err)
+	}
+	if resp.Code != 0 || resp.Data.MessageID == "" {
+		if isTokenError(resp.Code) {
+			c.invalidateToken(p.InstallationID.AppID)
+		}
+		return "", &APIError{Op: "send post message", Code: resp.Code, Msg: resp.Msg}
+	}
+	return resp.Data.MessageID, nil
+}
+
 // SendMarkdownCard posts the agent's reply as an interactive card
 // using Lark's schema-2.0 envelope with a single `tag: "markdown"`
 // body element. Lark's client renders the markdown into formatted

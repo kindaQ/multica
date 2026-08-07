@@ -306,6 +306,25 @@ type SendMarkdownCardParams struct {
 	ReplyTarget ReplyTarget
 }
 
+// SendPostParams is the input shape for a Feishu rich-text post. PostJSON is
+// the locale-wrapped content object accepted by msg_type=post, for example
+// {"zh_cn":{"title":"...","content":[...]}}.
+type SendPostParams struct {
+	InstallationID InstallationCredentials
+	ChatID         ChatID
+	OpenID         OpenID
+	PostJSON       string
+	ReplyTarget    ReplyTarget
+}
+
+// PostMessageSender is implemented by clients that support native Feishu
+// rich-text posts. It stays separate from APIClient so older test and plugin
+// clients remain source-compatible while proactive delivery gains the new
+// transport capability.
+type PostMessageSender interface {
+	SendPostMessage(ctx context.Context, p SendPostParams) (string, error)
+}
+
 // BindingPromptParams carries the data needed to render and send the
 // member-binding prompt card (single CTA: open the binding URL).
 type BindingPromptParams struct {

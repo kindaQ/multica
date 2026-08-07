@@ -635,6 +635,46 @@ func TestHTTPClient_SendTextMessage_HappyPath(t *testing.T) {
 	}
 }
 
+func TestHTTPClient_SendPostMessage_HappyPath(t *testing.T) {
+	fake := newLarkFake(t)
+	fake.stubToken("tok_post", 7200)
+	post := `{"zh_cn":{"title":"阶段完成","content":[[{"tag":"text","text":"完成"}]]}}`
+	fake.stubSend(
+		map[string]any{
+			"code": 0,
+			"msg":  "ok",
+			"data": map[string]string{"message_id": "om_post_1"},
+		},
+		func(r *http.Request, body map[string]string) {
+			if got := r.URL.Query().Get("receive_id_type"); got != "open_id" {
+				t.Errorf("receive_id_type: got %q want open_id", got)
+			}
+			if body["receive_id"] != "ou_owner" {
+				t.Errorf("receive_id: got %q want ou_owner", body["receive_id"])
+			}
+			if body["msg_type"] != "post" {
+				t.Errorf("msg_type: got %q want post", body["msg_type"])
+			}
+			if body["content"] != post {
+				t.Errorf("post content changed: got %q want %q", body["content"], post)
+			}
+		},
+	)
+
+	c := newTestClient(fake, time.Now)
+	msgID, err := c.SendPostMessage(context.Background(), SendPostParams{
+		InstallationID: testCreds(),
+		OpenID:         OpenID("ou_owner"),
+		PostJSON:       post,
+	})
+	if err != nil {
+		t.Fatalf("send post: %v", err)
+	}
+	if msgID != "om_post_1" {
+		t.Errorf("message id: got %q want om_post_1", msgID)
+	}
+}
+
 // TestHTTPClient_SendTextMessage_ReplyInThread pins the wire shape of a
 // threaded reply: when ReplyTarget is set the client must POST to the
 // reply endpoint (/messages/<id>/reply), carry reply_in_thread=true, and

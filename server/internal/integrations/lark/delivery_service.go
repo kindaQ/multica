@@ -2,8 +2,10 @@ package lark
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +20,7 @@ type ProactivePushParams struct {
 	AgentID        pgtype.UUID
 	IssueID        pgtype.UUID
 	Content        string
+	Post           json.RawMessage
 	IdempotencyKey string
 	ReplyPolicy    string
 }
@@ -54,8 +57,23 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 	}
 	p.Content = strings.TrimSpace(p.Content)
 	p.IdempotencyKey = strings.TrimSpace(p.IdempotencyKey)
-	if p.Content == "" || p.IdempotencyKey == "" || !p.WorkspaceID.Valid || !p.AgentID.Valid {
-		return ProactivePushResult{}, errors.New("workspace, agent, content, and idempotency key are required")
+	hasContent := p.Content != ""
+	hasPost := len(p.Post) > 0
+	if hasContent == hasPost {
+		return ProactivePushResult{}, errors.New("exactly one of content or post is required")
+	}
+	if p.IdempotencyKey == "" || !p.WorkspaceID.Valid || !p.AgentID.Valid {
+		return ProactivePushResult{}, errors.New("workspace, agent, message, and idempotency key are required")
+	}
+	if hasPost {
+		if len(p.Post) > 20*1024 {
+			return ProactivePushResult{}, errors.New("Feishu post exceeds 20KB")
+		}
+		var err error
+		p.Content, err = flattenOutboundPost(p.Post)
+		if err != nil {
+			return ProactivePushResult{}, err
+		}
 	}
 	if p.ReplyPolicy == "" {
 		if p.IssueID.Valid {
@@ -205,7 +223,13 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 		creds.TenantKey = inst.TenantKey.String
 	}
 	var messageID string
-	if containsMarkdown(p.Content) {
+	if hasPost {
+		sender, ok := s.client.(PostMessageSender)
+		if !ok {
+			return ProactivePushResult{}, errors.New("feishu client does not support rich-text posts")
+		}
+		messageID, err = sender.SendPostMessage(ctx, SendPostParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), PostJSON: string(p.Post)})
+	} else if containsMarkdown(p.Content) {
 		messageID, err = s.client.SendMarkdownCard(ctx, SendMarkdownCardParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), Markdown: p.Content})
 	} else {
 		messageID, err = s.client.SendTextMessage(ctx, SendTextParams{InstallationID: creds, OpenID: OpenID(binding.ChannelUserID), Text: p.Content})
@@ -220,6 +244,27 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 	}
 	_, _ = s.q.SetChannelDeliveryStatus(ctx, db.SetChannelDeliveryStatusParams{ID: delivery.ID, Status: "sent", TerminalReason: textOrNull("sent")})
 	return ProactivePushResult{InstallationID: inst.ID, DeliveryID: delivery.ID, MessageID: messageID}, nil
+}
+
+func flattenOutboundPost(raw json.RawMessage) (string, error) {
+	var locales map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &locales); err != nil || len(locales) == 0 {
+		return "", errors.New("Feishu post must be a non-empty locale object")
+	}
+	keys := make([]string, 0, len(locales))
+	for key := range locales {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	selected := locales["zh_cn"]
+	if len(selected) == 0 {
+		selected = locales[keys[0]]
+	}
+	content := strings.TrimSpace(flattenPostContent(string(selected)))
+	if content == "" {
+		return "", errors.New("Feishu post has no readable content")
+	}
+	return content, nil
 }
 
 func proactiveChatTitle(agentName string) string {
