@@ -186,20 +186,28 @@ func (s *ChannelStore) UpsertLarkInstallation(ctx context.Context, arg UpsertIns
 
 // ReclaimDeadInstallationByAppID frees the (feishu, config->>'app_id') routing
 // slot before a rebind by removing a DEAD prior owner of the same Lark/Feishu
-// app — a revoked placeholder left by a DIFFERENT agent in this workspace, or an
+// app — a revoked placeholder left by a DIFFERENT logical target, or an
 // ORPHAN whose owning workspace/agent has been deleted (#4810) — together with
 // every dependent row of that installation, in a single statement. A live owner
-// is deliberately left in place: the SAME agent's own revoked row (reactivated by
-// the follow-up upsert), and any ACTIVE owner whose agent still exists — including
-// an ARCHIVED agent, since archiving is reversible — so the upsert surfaces a
-// conflict instead of silently stealing the bot. See the full contract, and the
-// TOCTOU / EvalPlanQual reasoning, on ReclaimDeadChannelInstallationByAppID.
-func (s *ChannelStore) ReclaimDeadInstallationByAppID(ctx context.Context, workspaceID, agentID pgtype.UUID, appID string) error {
+// is deliberately left in place: the SAME (workspace, target_type, target_id)
+// revoked row (reactivated by the follow-up upsert), and any ACTIVE owner whose
+// target still exists — including an archived agent, since archiving is
+// reversible — so the upsert surfaces a conflict instead of silently stealing
+// the bot. Target identity, rather than agent_id, is essential for squad rows:
+// squad installations deliberately store agent_id=NULL.
+func (s *ChannelStore) ReclaimDeadInstallationByAppID(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	targetType string,
+	targetID pgtype.UUID,
+	appID string,
+) error {
 	_, err := s.Queries.ReclaimDeadChannelInstallationByAppID(ctx, db.ReclaimDeadChannelInstallationByAppIDParams{
 		ChannelType: channelTypeFeishu,
 		AppID:       appID,
 		WorkspaceID: workspaceID,
-		AgentID:     agentID,
+		TargetType:  targetType,
+		TargetID:    targetID,
 	})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		// pgx.ErrNoRows just means nothing was dead — a no-op, not a failure.

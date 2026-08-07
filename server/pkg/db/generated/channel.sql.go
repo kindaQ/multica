@@ -2304,7 +2304,8 @@ WITH dead AS (
       AND (
             (ci.status = 'revoked'
                 AND NOT (ci.workspace_id = $3
-                         AND ci.agent_id = $4))
+                         AND ci.target_type = $4
+                         AND ci.target_id = $5))
          OR NOT EXISTS (SELECT 1 FROM workspace w WHERE w.id = ci.workspace_id)
          OR (ci.target_type = 'agent' AND NOT EXISTS (SELECT 1 FROM agent a WHERE a.id = ci.target_id))
          OR (ci.target_type = 'squad' AND NOT EXISTS (SELECT 1 FROM squad s WHERE s.id = ci.target_id))
@@ -2362,7 +2363,8 @@ type ReclaimDeadChannelInstallationByAppIDParams struct {
 	ChannelType string      `json:"channel_type"`
 	AppID       string      `json:"app_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
+	TargetType  string      `json:"target_type"`
+	TargetID    pgtype.UUID `json:"target_id"`
 }
 
 // Rebind cleanup gate. Frees the (channel_type, config->>'app_id') routing slot
@@ -2372,21 +2374,21 @@ type ReclaimDeadChannelInstallationByAppIDParams struct {
 // (pgx.ErrNoRows when nothing was dead — a no-op the caller treats as success).
 //
 // "Dead" is exactly one of:
-//  1. a REVOKED placeholder held by ANY agent OTHER than the caller's own
-//     (workspace, agent) pair. Disconnect only flips status to 'revoked' — no
+//  1. a REVOKED placeholder held by ANY target OTHER than the caller's own
+//     (workspace, target_type, target_id) tuple. Disconnect only flips status to 'revoked' — no
 //     product path ever hard-deletes the row — so a revoked row would otherwise
 //     pin the bot's app_id slot forever with no self-serve recovery, even across
 //     workspaces (workspace A disconnects; workspace B, which proves control by
 //     holding the same app credentials, rebinds). Revoke is the owner's explicit
 //     "I'm done with this bot", so any revoked row is reclaimable — only the
-//     caller's OWN revoked row is spared (reactivated in place; see below).
+//     caller's OWN target row is spared (reactivated in place; see below).
 //  2. an ORPHAN whose owning workspace OR agent row no longer exists — the
 //     workspace was deleted, or the agent was hard-deleted on runtime teardown.
 //     With no FK the installation outlives its owner and keeps occupying the
 //     app_id slot: the "ghost binding" that made a bot un-rebindable (#4810).
 //
 // Deliberately NOT dead (the caller refuses these with an accurate conflict):
-//   - the SAME agent's own revoked row (agent_id = @agent_id): the upsert
+//   - the SAME logical target's own revoked row: the upsert
 //     reactivates it in place, preserving its installation_id and every binding;
 //   - a live ACTIVE owner whose agent still exists — INCLUDING an ARCHIVED agent:
 //     archive is reversible, so its bot stays owned rather than being silently
@@ -2404,7 +2406,8 @@ func (q *Queries) ReclaimDeadChannelInstallationByAppID(ctx context.Context, arg
 		arg.ChannelType,
 		arg.AppID,
 		arg.WorkspaceID,
-		arg.AgentID,
+		arg.TargetType,
+		arg.TargetID,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)

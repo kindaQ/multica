@@ -635,15 +635,23 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 	qtx := s.queries.WithTx(tx)
 
 	// If the same Feishu app (app_id) is held by a DEAD prior owner — a revoked
-	// placeholder left by a DIFFERENT agent in this workspace, or an orphan whose
+	// placeholder left by a DIFFERENT logical target, or an orphan whose
 	// workspace/agent was deleted (#4810) — that row still occupies the
 	// (channel_type, config->>'app_id') unique slot and blocks the
 	// UpsertChannelInstallation INSERT below. Reclaim it first — the transaction
 	// wraps both the delete and the upsert so a failure between them rolls back
-	// cleanly. A live owner is left in place (the SAME agent's own revoked row is
-	// reactivated in place by the upsert; an active/archived agent stays owned),
-	// so the upsert surfaces the conflict below instead of stealing the bot.
-	if err := qtx.ReclaimDeadInstallationByAppID(ctx, sess.workspaceID, sess.agentID, res.ClientID); err != nil {
+	// cleanly. A live owner is left in place (the SAME logical target's revoked
+	// row is reactivated in place by the upsert; an active/archived target stays
+	// owned), so the upsert surfaces the conflict below instead of stealing the
+	// bot. Comparing the target tuple avoids SQL NULL semantics making a revoked
+	// squad row (agent_id=NULL) permanently occupy the app_id unique slot.
+	if err := qtx.ReclaimDeadInstallationByAppID(
+		ctx,
+		sess.workspaceID,
+		string(sess.targetType),
+		sess.targetID,
+		res.ClientID,
+	); err != nil {
 		s.cfg.Logger.Warn("lark registration: reclaim dead installation",
 			"session_id", sess.id, "err", err)
 		sess.markError(RegistrationReasonInternalError, err.Error(), s.gcDeadline())
