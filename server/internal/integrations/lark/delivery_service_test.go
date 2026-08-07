@@ -47,6 +47,41 @@ func TestFlattenOutboundPost(t *testing.T) {
 	}
 }
 
+func TestAppendFooterToPost(t *testing.T) {
+	raw := json.RawMessage(`{"zh_cn":{"title":"阶段完成","content":[[{"tag":"text","text":"完成"}]]}}`)
+	got, err := appendFooterToPost(raw, "from developer (issue PEN-4)")
+	if err != nil {
+		t.Fatalf("appendFooterToPost() error = %v", err)
+	}
+	flattened, err := flattenOutboundPost(got)
+	if err != nil {
+		t.Fatalf("flattenOutboundPost() error = %v", err)
+	}
+	if !strings.Contains(flattened, "──────────") || !strings.Contains(flattened, "from developer (issue PEN-4)") {
+		t.Fatalf("flattened post = %q", flattened)
+	}
+}
+
+func TestProactiveMessageFooter(t *testing.T) {
+	tests := []struct {
+		name            string
+		agentName       string
+		issueIdentifier string
+		want            string
+	}{
+		{name: "issue route", agentName: " developer ", issueIdentifier: "PEN-4", want: "from developer (issue PEN-4)"},
+		{name: "chat route", agentName: "tester", want: "from tester"},
+		{name: "missing agent name", want: "from agent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := proactiveMessageFooter(tt.agentName, tt.issueIdentifier); got != tt.want {
+				t.Fatalf("proactiveMessageFooter() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProactiveChatTitle(t *testing.T) {
 	if got := proactiveChatTitle("developer"); got != "developer · Feishu proactive chat" {
 		t.Fatalf("proactiveChatTitle() = %q", got)

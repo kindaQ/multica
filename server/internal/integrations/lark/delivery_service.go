@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -130,11 +131,36 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 	if !allowed {
 		return ProactivePushResult{}, errors.New("calling agent is outside the installation squad")
 	}
+	issueIdentifier := ""
 	if p.IssueID.Valid {
 		issue, issueErr := s.q.GetIssue(ctx, p.IssueID)
 		if issueErr != nil || issue.WorkspaceID != p.WorkspaceID {
 			return ProactivePushResult{}, errors.New("issue is unavailable in this workspace")
 		}
+		issueIdentifier = "#" + strconv.Itoa(int(issue.Number))
+		workspace, workspaceErr := s.q.GetWorkspace(ctx, p.WorkspaceID)
+		if workspaceErr != nil {
+			return ProactivePushResult{}, fmt.Errorf("load workspace for issue footer: %w", workspaceErr)
+		}
+		if prefix := strings.TrimSpace(workspace.IssuePrefix); prefix != "" {
+			issueIdentifier = prefix + "-" + strconv.Itoa(int(issue.Number))
+		}
+	}
+	footer := proactiveMessageFooter(agent.Name, issueIdentifier)
+	if hasPost {
+		p.Post, err = appendFooterToPost(p.Post, footer)
+		if err != nil {
+			return ProactivePushResult{}, err
+		}
+		if len(p.Post) > 20*1024 {
+			return ProactivePushResult{}, errors.New("Feishu post exceeds 20KB")
+		}
+		p.Content, err = flattenOutboundPost(p.Post)
+		if err != nil {
+			return ProactivePushResult{}, err
+		}
+	} else {
+		p.Content += "\n\n──────────\n" + footer
 	}
 	binding, err := s.q.GetChannelUserBindingForMulticaUser(ctx, db.GetChannelUserBindingForMulticaUserParams{
 		InstallationID: inst.ID, MulticaUserID: inst.InstallerUserID,
@@ -265,6 +291,43 @@ func flattenOutboundPost(raw json.RawMessage) (string, error) {
 		return "", errors.New("Feishu post has no readable content")
 	}
 	return content, nil
+}
+
+type outboundPostLocale struct {
+	Title   string             `json:"title"`
+	Content [][]map[string]any `json:"content"`
+}
+
+func appendFooterToPost(raw json.RawMessage, footer string) (json.RawMessage, error) {
+	var locales map[string]outboundPostLocale
+	if err := json.Unmarshal(raw, &locales); err != nil || len(locales) == 0 {
+		return nil, errors.New("Feishu post must be a non-empty locale object")
+	}
+	for locale, post := range locales {
+		post.Content = append(post.Content,
+			[]map[string]any{{"tag": "text", "text": " "}},
+			[]map[string]any{{"tag": "text", "text": "──────────"}},
+			[]map[string]any{{"tag": "text", "text": footer}},
+		)
+		locales[locale] = post
+	}
+	encoded, err := json.Marshal(locales)
+	if err != nil {
+		return nil, fmt.Errorf("encode Feishu post footer: %w", err)
+	}
+	return encoded, nil
+}
+
+func proactiveMessageFooter(agentName, issueIdentifier string) string {
+	agentName = strings.TrimSpace(agentName)
+	if agentName == "" {
+		agentName = "agent"
+	}
+	footer := "from " + agentName
+	if issueIdentifier != "" {
+		footer += " (issue " + issueIdentifier + ")"
+	}
+	return footer
 }
 
 func proactiveChatTitle(agentName string) string {
