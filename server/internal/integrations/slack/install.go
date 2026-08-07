@@ -166,7 +166,8 @@ func (s *InstallService) persistInstall(ctx context.Context, p installPersist) (
 		ChannelType: string(TypeSlack),
 		AppID:       p.appIDKey,
 		WorkspaceID: p.wsID,
-		AgentID:     p.agentID,
+		TargetType:  "agent",
+		TargetID:    p.agentID,
 	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		// pgx.ErrNoRows just means nothing was dead — a no-op, not a failure.
 		return db.ChannelInstallation{}, fmt.Errorf("reclaim dead slack installation: %w", err)
