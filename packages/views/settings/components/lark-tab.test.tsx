@@ -451,7 +451,7 @@ describe("LarkAgentBindButton (CTA gate)", () => {
 describe("LarkSquadBindButton", () => {
   beforeEach(resetFixtures);
 
-  it("reuses the leader's existing Bot instead of opening another registration", async () => {
+  it("automatically reuses the leader's existing Bot without another click", async () => {
     installationsRef.current.installations = [
       {
         id: "install-leader",
@@ -469,6 +469,35 @@ describe("LarkSquadBindButton", () => {
       },
     ];
     mockUseForSquad.mockResolvedValue(undefined);
+    render(
+      <LarkSquadBindButton
+        squadId="squad-1"
+        squadName="Platform"
+        leaderId="leader-1"
+      />,
+      { wrapper: I18nWrapper },
+    );
+
+    expect(mockBeginInstall).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mockUseForSquad).toHaveBeenCalledWith(
+        "workspace-1",
+        "install-leader",
+        "squad-1",
+      );
+      expect(mockInvalidate).toHaveBeenCalled();
+    });
+    expect(screen.queryByRole("button", { name: /Use leader's Feishu Bot/i })).toBeNull();
+  });
+
+  it("starts a new scan directly for the squad target", async () => {
+    mockBeginInstall.mockResolvedValue({
+      session_id: "sess-squad",
+      qr_code_url: "https://accounts.feishu.cn/oauth/v1/device?u=squad",
+      expires_in_seconds: 300,
+      poll_interval_seconds: 2,
+    });
+    mockGetStatus.mockResolvedValue({ status: "pending" });
     const user = userEvent.setup();
     render(
       <LarkSquadBindButton
@@ -479,17 +508,17 @@ describe("LarkSquadBindButton", () => {
       { wrapper: I18nWrapper },
     );
 
-    await user.click(screen.getByRole("button", { name: /Use leader's Feishu Bot/i }));
+    await user.click(screen.getByRole("button", { name: /Bind to Feishu/i }));
 
-    expect(mockBeginInstall).not.toHaveBeenCalled();
-    expect(mockUseForSquad).toHaveBeenCalledWith(
-      "workspace-1",
-      "install-leader",
-      "squad-1",
-    );
     await waitFor(() => {
-      expect(mockInvalidate).toHaveBeenCalled();
+      expect(mockBeginInstall).toHaveBeenCalledWith(
+        "workspace-1",
+        "squad-1",
+        "feishu",
+        "squad",
+      );
     });
+    expect(mockUseForSquad).not.toHaveBeenCalled();
   });
 });
 
