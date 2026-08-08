@@ -69,6 +69,10 @@ type Result struct {
 	// runScheduled reports whether this ingest scheduled a normal chat run.
 	// It is Router-internal state: repliers must continue to use Outcome.
 	runScheduled bool
+	// typingKey correlates the inbound processing indicator with its terminal
+	// event. Chat routes use chat_session_id; issue routes have no session and
+	// use the task_id created by the issue ingester.
+	typingKey pgtype.UUID
 }
 
 // ResolvedInstallation is the channel-agnostic installation context the Router

@@ -315,6 +315,9 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 		return nil
 	}
 	if !chatSessionID.Valid {
+		if p.typingIndicator != nil {
+			p.typingIndicator.Clear(ctx, taskID)
+		}
 		return p.processIssueTerminal(ctx, taskID, e)
 	}
 	binding, err := p.queries.GetLarkChatSessionBindingBySession(ctx, chatSessionID)
@@ -397,6 +400,9 @@ func (p *Patcher) processIssueReaction(ctx context.Context, e events.Event) erro
 	taskID := pgtype.UUID{}
 	if err := taskID.Scan(e.TaskID); err != nil || !taskID.Valid {
 		return nil
+	}
+	if p.typingIndicator != nil {
+		p.typingIndicator.Clear(ctx, taskID)
 	}
 	root, ok := e.Payload.(map[string]any)
 	if !ok {
@@ -505,6 +511,9 @@ func (p *Patcher) processIssueComment(ctx context.Context, e events.Event) error
 	comment, ok := commentDeliveryPayload(e.Payload)
 	if !ok || comment.authorType != "agent" || comment.commentType != "comment" || !comment.taskID.Valid {
 		return nil
+	}
+	if p.typingIndicator != nil {
+		p.typingIndicator.Clear(ctx, comment.taskID)
 	}
 	deliveries, err := dq.ListChannelDeliveriesByTask(ctx, comment.taskID)
 	if err != nil {

@@ -229,10 +229,14 @@ func (r *Router) Handle(ctx context.Context, msg channel.InboundMessage) error {
 	// Typing indicator on ingest, detached so the reaction HTTP call never
 	// blocks the connector ACK path.
 	if res.Outcome == OutcomeIngested && res.runScheduled && set.Typing != nil {
+		typingKey := res.typingKey
+		if !typingKey.Valid {
+			typingKey = res.ChatSessionID
+		}
 		go func() {
 			tctx, cancel := context.WithTimeout(context.Background(), r.replyTimeout)
 			defer cancel()
-			set.Typing.OnIngested(tctx, inst, msg, res.ChatSessionID)
+			set.Typing.OnIngested(tctx, inst, msg, typingKey)
 		}()
 	}
 	r.scheduleReply(set, inst, msg, res)
@@ -381,6 +385,8 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 				InstallationID: inst.ID,
 				Sender:         msg.Source.SenderID,
 				IssueID:        resolved.IssueID,
+				runScheduled:   true,
+				typingKey:      ingested.TaskID,
 			}, finalize, nil
 		}
 	}
@@ -513,6 +519,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 	//    in a window wins (MUL-2645).
 	r.scheduleRun(set, inst, msg, sessionID, identity.UserID)
 	res.runScheduled = true
+	res.typingKey = sessionID
 	if resolveMedia {
 		r.enqueueMedia(set, inst, identity, appendRes.MessageID, msg, sessionID, localMediaDeadline)
 	}

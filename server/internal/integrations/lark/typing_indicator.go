@@ -21,24 +21,24 @@ const typingIndicatorMaxAge = 2 * time.Minute
 
 // TypingIndicatorState holds the identifiers needed to remove a reaction.
 type TypingIndicatorState struct {
-	MessageID  string
-	ReactionID string
+	InstallationID pgtype.UUID
+	MessageID      string
+	ReactionID     string
 }
 
 // TypingIndicatorQueries is the narrow DB surface the manager needs.
 type TypingIndicatorQueries interface {
-	GetLarkChatSessionBindingBySession(ctx context.Context, chatSessionID pgtype.UUID) (ChatSessionBinding, error)
 	GetLarkInstallation(ctx context.Context, id pgtype.UUID) (Installation, error)
 }
 
 // TypingIndicatorManager owns the "processing" reaction lifecycle for
 // inbound Lark messages. When a message is successfully ingested it adds
 // a Typing reaction; when the agent eventually replies (or fails) it
-// clears the reaction(s) for that chat session.
+// clears the reaction(s) for that run correlation key.
 //
 // The manager is safe for concurrent use. It tolerates missing or
 // stale state gracefully: adding a reaction to a message that already
-// has one simply appends another state entry; clearing a session with
+// has one simply appends another state entry; clearing a key with
 // no tracked state is a no-op.
 type TypingIndicatorManager struct {
 	client      APIClient
@@ -47,7 +47,7 @@ type TypingIndicatorManager struct {
 	log         *slog.Logger
 
 	mu     sync.RWMutex
-	states map[string][]*TypingIndicatorState // key = chat_session_id string
+	states map[string][]*TypingIndicatorState // key = chat_session_id or issue task_id
 }
 
 // NewTypingIndicatorManager constructs a manager. All dependencies must
@@ -66,20 +66,20 @@ func NewTypingIndicatorManager(client APIClient, credentials CredentialsResolver
 }
 
 // Add sends a Typing reaction to the given message and records the state
-// under the chat session. It is synchronous — the caller decides whether
+// under the chat session or issue task key. It is synchronous — the caller decides whether
 // to run it in a detached goroutine. Errors are logged and swallowed.
 //
 // createTime is Lark's epoch-millisecond string (InboundMessage.CreateTime).
 // Messages older than typingIndicatorMaxAge are silently skipped so that
 // WebSocket replays and stale reconnects do not surface misleading "processing"
 // badges on long-finished conversations.
-func (m *TypingIndicatorManager) Add(ctx context.Context, inst Installation, chatSessionID pgtype.UUID, messageID string, createTime string) {
+func (m *TypingIndicatorManager) Add(ctx context.Context, inst Installation, typingKey pgtype.UUID, messageID string, createTime string) {
 	if messageID == "" {
 		return
 	}
 	if isMessageTooOld(createTime) {
 		m.log.Debug("lark typing indicator: message too old, skipping",
-			"chat_session_id", uuidString(chatSessionID),
+			"typing_key", uuidString(typingKey),
 			"message_id", messageID,
 			"create_time", createTime,
 		)
@@ -88,7 +88,7 @@ func (m *TypingIndicatorManager) Add(ctx context.Context, inst Installation, cha
 	creds, err := m.resolveCredentials(inst)
 	if err != nil {
 		m.log.Warn("lark typing indicator: failed to resolve credentials",
-			"chat_session_id", uuidString(chatSessionID),
+			"typing_key", uuidString(typingKey),
 			"message_id", messageID,
 			"err", err,
 		)
@@ -102,23 +102,24 @@ func (m *TypingIndicatorManager) Add(ctx context.Context, inst Installation, cha
 	})
 	if err != nil {
 		m.log.Warn("lark typing indicator: add reaction failed",
-			"chat_session_id", uuidString(chatSessionID),
+			"typing_key", uuidString(typingKey),
 			"message_id", messageID,
 			"err", err,
 		)
 		return
 	}
 
-	key := uuidString(chatSessionID)
+	key := uuidString(typingKey)
 	m.mu.Lock()
 	m.states[key] = append(m.states[key], &TypingIndicatorState{
-		MessageID:  messageID,
-		ReactionID: reactionID,
+		InstallationID: inst.ID,
+		MessageID:      messageID,
+		ReactionID:     reactionID,
 	})
 	m.mu.Unlock()
 
 	m.log.Debug("lark typing indicator: reaction added",
-		"chat_session_id", key,
+		"typing_key", key,
 		"message_id", messageID,
 		"reaction_id", reactionID,
 	)
@@ -128,8 +129,8 @@ func (m *TypingIndicatorManager) Add(ctx context.Context, inst Installation, cha
 // drops the state entry. It is synchronous so the reaction is gone before
 // the agent's reply is sent, giving the user a clean visual transition.
 // Individual delete failures are logged but do not abort the loop.
-func (m *TypingIndicatorManager) Clear(ctx context.Context, chatSessionID pgtype.UUID) {
-	key := uuidString(chatSessionID)
+func (m *TypingIndicatorManager) Clear(ctx context.Context, typingKey pgtype.UUID) {
+	key := uuidString(typingKey)
 	m.mu.Lock()
 	states := m.states[key]
 	delete(m.states, key)
@@ -139,35 +140,20 @@ func (m *TypingIndicatorManager) Clear(ctx context.Context, chatSessionID pgtype
 		return
 	}
 
-	binding, err := m.queries.GetLarkChatSessionBindingBySession(ctx, chatSessionID)
-	if err != nil {
-		m.log.Warn("lark typing indicator: failed to lookup binding for clear",
-			"chat_session_id", key,
-			"err", err,
-		)
-		return
-	}
-
-	inst, err := m.queries.GetLarkInstallation(ctx, binding.InstallationID)
-	if err != nil {
-		m.log.Warn("lark typing indicator: failed to lookup installation for clear",
-			"chat_session_id", key,
-			"err", err,
-		)
-		return
-	}
-
-	creds, err := m.resolveCredentials(inst)
-	if err != nil {
-		m.log.Warn("lark typing indicator: failed to resolve credentials for clear",
-			"chat_session_id", key,
-			"err", err,
-		)
-		return
-	}
-
 	for _, s := range states {
 		if s.ReactionID == "" {
+			continue
+		}
+		inst, err := m.queries.GetLarkInstallation(ctx, s.InstallationID)
+		if err != nil {
+			m.log.Warn("lark typing indicator: failed to lookup installation for clear",
+				"typing_key", key, "installation_id", uuidString(s.InstallationID), "err", err)
+			continue
+		}
+		creds, err := m.resolveCredentials(inst)
+		if err != nil {
+			m.log.Warn("lark typing indicator: failed to resolve credentials for clear",
+				"typing_key", key, "installation_id", uuidString(s.InstallationID), "err", err)
 			continue
 		}
 		if err := m.client.DeleteMessageReaction(ctx, DeleteReactionParams{
@@ -176,7 +162,7 @@ func (m *TypingIndicatorManager) Clear(ctx context.Context, chatSessionID pgtype
 			ReactionID:     s.ReactionID,
 		}); err != nil {
 			m.log.Warn("lark typing indicator: delete reaction failed",
-				"chat_session_id", key,
+				"typing_key", key,
 				"message_id", s.MessageID,
 				"reaction_id", s.ReactionID,
 				"err", err,
@@ -184,7 +170,7 @@ func (m *TypingIndicatorManager) Clear(ctx context.Context, chatSessionID pgtype
 			continue
 		}
 		m.log.Debug("lark typing indicator: reaction removed",
-			"chat_session_id", key,
+			"typing_key", key,
 			"message_id", s.MessageID,
 			"reaction_id", s.ReactionID,
 		)

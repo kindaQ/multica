@@ -173,12 +173,14 @@ type fakeTyping struct {
 	mu      sync.Mutex
 	count   int
 	settled int
+	keys    []pgtype.UUID
 }
 
-func (f *fakeTyping) OnIngested(_ context.Context, _ ResolvedInstallation, _ channel.InboundMessage, _ pgtype.UUID) {
+func (f *fakeTyping) OnIngested(_ context.Context, _ ResolvedInstallation, _ channel.InboundMessage, key pgtype.UUID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.count++
+	f.keys = append(f.keys, key)
 }
 func (f *fakeTyping) OnSettled(_ context.Context, _ pgtype.UUID) {
 	f.mu.Lock()
@@ -187,6 +189,14 @@ func (f *fakeTyping) OnSettled(_ context.Context, _ pgtype.UUID) {
 }
 func (f *fakeTyping) calls() int        { f.mu.Lock(); defer f.mu.Unlock(); return f.count }
 func (f *fakeTyping) settledCalls() int { f.mu.Lock(); defer f.mu.Unlock(); return f.settled }
+func (f *fakeTyping) lastKey() pgtype.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.keys) == 0 {
+		return pgtype.UUID{}
+	}
+	return f.keys[len(f.keys)-1]
+}
 
 type fakeMedia struct {
 	mu            sync.Mutex
@@ -266,6 +276,15 @@ func (f *fakeIssues) Create(_ context.Context, p service.IssueCreateParams, o se
 	f.called = true
 	f.params = p
 	f.opts = o
+	return f.result, f.err
+}
+
+type fakeIssueIngester struct {
+	result IssueIngressResult
+	err    error
+}
+
+func (f *fakeIssueIngester) IngestIssueMessage(context.Context, IssueIngressParams) (IssueIngressResult, error) {
 	return f.result, f.err
 }
 
@@ -350,19 +369,20 @@ func p2pMessage(t *testing.T) channel.InboundMessage {
 }
 
 type harness struct {
-	router  *Router
-	inst    *fakeInstaller
-	ident   *fakeIdentity
-	route   *fakeRoute
-	dedup   *fakeDedup
-	binder  *fakeBinder
-	audit   *fakeAuditor
-	replier *fakeReplier
-	typing  *fakeTyping
-	media   *fakeMedia
-	issues  *fakeIssues
-	tasks   *fakeTasks
-	reader  *fakeReader
+	router      *Router
+	inst        *fakeInstaller
+	ident       *fakeIdentity
+	route       *fakeRoute
+	dedup       *fakeDedup
+	binder      *fakeBinder
+	audit       *fakeAuditor
+	replier     *fakeReplier
+	typing      *fakeTyping
+	media       *fakeMedia
+	issues      *fakeIssues
+	issueIngest *fakeIssueIngester
+	tasks       *fakeTasks
+	reader      *fakeReader
 }
 
 func newHarness(t *testing.T) *harness {
@@ -379,13 +399,14 @@ func newHarness(t *testing.T) *harness {
 				DedupMarked: true,
 			},
 		},
-		audit:   &fakeAuditor{},
-		replier: &fakeReplier{},
-		typing:  &fakeTyping{},
-		media:   &fakeMedia{},
-		issues:  &fakeIssues{},
-		tasks:   &fakeTasks{},
-		reader:  &fakeReader{ws: db.Workspace{IssuePrefix: "MUL"}},
+		audit:       &fakeAuditor{},
+		replier:     &fakeReplier{},
+		typing:      &fakeTyping{},
+		media:       &fakeMedia{},
+		issues:      &fakeIssues{},
+		issueIngest: &fakeIssueIngester{},
+		tasks:       &fakeTasks{},
+		reader:      &fakeReader{ws: db.Workspace{IssuePrefix: "MUL"}},
 	}
 	h.router = NewRouter(h.issues, h.tasks, h.reader, RouterConfig{Logger: discardLogger()})
 	h.router.Register(channel.TypeFeishu, ResolverSet{
@@ -398,9 +419,29 @@ func newHarness(t *testing.T) *harness {
 		Replier:      h.replier,
 		Typing:       h.typing,
 		Media:        h.media,
+		Issue:        h.issueIngest,
 		OriginType:   "lark_chat",
 	})
 	return h
+}
+
+func TestRouter_IssueRouteStartsTypingWithTaskKey(t *testing.T) {
+	h := newHarness(t)
+	h.media.noMedia = true
+	issueID := uuidFromString(t, "77777777-7777-4777-8777-777777777777")
+	taskID := uuidFromString(t, "88888888-8888-4888-8888-888888888888")
+	h.route.result = RouteResolution{IssueID: issueID}
+	h.issueIngest.result = IssueIngressResult{TaskID: taskID, DedupMarked: true}
+
+	if err := h.router.Handle(context.Background(), p2pMessage(t)); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if !waitFor(time.Second, func() bool { return h.typing.calls() == 1 }) {
+		t.Fatal("issue-routed message must start the typing indicator")
+	}
+	if got := h.typing.lastKey(); got != taskID {
+		t.Fatalf("typing key = %s, want issue task id %s", uuidString(got), uuidString(taskID))
+	}
 }
 
 func TestRouter_NoResolverSet_ReturnsError(t *testing.T) {
