@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -278,7 +279,35 @@ func isTrivialDoneOutput(output string) bool {
 			return true
 		}
 	}
-	return false
+	if len(normalized) > 320 {
+		return false
+	}
+	noReply := strings.Contains(normalized, "no reply") || strings.Contains(normalized, "no response")
+	noWork := strings.Contains(normalized, "no work") || strings.Contains(normalized, "no action") || strings.Contains(normalized, "acknowledg")
+	return noReply && noWork
+}
+
+func reactionEmojiForOutput(output string) (string, bool) {
+	trimmed := strings.TrimSpace(output)
+	const marker = "reaction:"
+	if strings.HasPrefix(strings.ToLower(trimmed), marker) {
+		emoji := strings.TrimSpace(trimmed[len(marker):])
+		if emoji == "" || strings.ContainsAny(emoji, " \t\r\n") || utf8.RuneCountInString(emoji) > 8 {
+			return "", false
+		}
+		hasNonASCII := false
+		for _, r := range emoji {
+			if unicode.IsLetter(r) || unicode.IsNumber(r) {
+				return "", false
+			}
+			hasNonASCII = hasNonASCII || r > unicode.MaxASCII
+		}
+		return emoji, hasNonASCII
+	}
+	if isTrivialDoneOutput(output) {
+		return "👍", true
+	}
+	return "", false
 }
 
 func (s *TaskService) captureTaskQueued(ctx context.Context, task db.AgentTaskQueue) {
@@ -3217,9 +3246,9 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
 
-	// Invariant: every completed issue task must have at least one agent
-	// comment on the issue, so the user always sees something when a run
-	// ends. If the agent posted a comment during execution (result, progress
+	// Invariant: every completed issue task must produce a visible result unless
+	// the agent deliberately selected a Reaction for a no-reply turn. If the
+	// agent posted a comment during execution (result, progress
 	// ping, or CLI reply), HasAgentCommentedSince returns true and we skip.
 	// Otherwise, synthesize one from the final output. For comment-triggered
 	// tasks, TriggerCommentID threads the fallback under the original comment;
@@ -3249,11 +3278,13 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 					// decoded into real newlines before the comment hits the DB. See
 					// util.UnescapeBackslashEscapes for the exact contract.
 					body := util.UnescapeBackslashEscapes(payload.Output)
-					if task.TriggerCommentID.Valid && isTrivialDoneOutput(body) {
-						slog.Warn("suppressing trivial comment-trigger fallback output",
+					if emoji, react := reactionEmojiForOutput(body); task.TriggerCommentID.Valid && react {
+						s.createAgentReaction(ctx, task, emoji)
+						slog.Info("replaced no-reply task output with comment reaction",
 							"task_id", util.UUIDToString(task.ID),
 							"issue_id", util.UUIDToString(task.IssueID),
 							"agent_id", util.UUIDToString(task.AgentID),
+							"emoji", emoji,
 						)
 					} else {
 						// Redact first, then bound: a runaway raw-stream Output (GH #5455)
@@ -4836,6 +4867,43 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 		},
 	})
 	s.AutoUnresolveThreadOnReply(ctx, rootComment, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(agentID))
+}
+
+func (s *TaskService) createAgentReaction(ctx context.Context, task db.AgentTaskQueue, emoji string) {
+	if !task.TriggerCommentID.Valid || !task.IssueID.Valid {
+		return
+	}
+	issue, err := s.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		slog.Warn("load issue for agent reaction failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	reaction, err := s.Queries.AddReaction(ctx, db.AddReactionParams{
+		CommentID: task.TriggerCommentID, WorkspaceID: issue.WorkspaceID,
+		ActorType: "agent", ActorID: task.AgentID, Emoji: emoji,
+	})
+	if err != nil {
+		slog.Warn("add agent reaction failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	comment, err := s.Queries.GetComment(ctx, task.TriggerCommentID)
+	if err != nil || s.Bus == nil {
+		return
+	}
+	s.Bus.Publish(events.Event{
+		Type: protocol.EventReactionAdded, WorkspaceID: util.UUIDToString(issue.WorkspaceID),
+		ActorType: "agent", ActorID: util.UUIDToString(task.AgentID),
+		Payload: map[string]any{
+			"reaction": map[string]any{
+				"id": util.UUIDToString(reaction.ID), "comment_id": util.UUIDToString(reaction.CommentID),
+				"actor_type": reaction.ActorType, "actor_id": util.UUIDToString(reaction.ActorID),
+				"emoji": reaction.Emoji, "created_at": reaction.CreatedAt.Time.UTC().Format(time.RFC3339),
+			},
+			"issue_id": util.UUIDToString(issue.ID), "issue_title": issue.Title, "issue_status": issue.Status,
+			"comment_id": util.UUIDToString(comment.ID), "comment_author_type": comment.AuthorType,
+			"comment_author_id": util.UUIDToString(comment.AuthorID),
+		},
+	})
 }
 
 // AutoUnresolveThreadOnReply clears resolved_at on the thread root when a

@@ -638,9 +638,16 @@ func (h *Handler) CreateLarkDelivery(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var sourceTaskID, parentCommentID pgtype.UUID
+	if issueID.Valid {
+		if task, found := h.taskFromRequestHeader(r); found {
+			sourceTaskID, parentCommentID = proactiveCommentLineage(task, issueID, agentID)
+		}
+	}
 	result, err := h.LarkDelivery.Push(r.Context(), lark.ProactivePushParams{
 		WorkspaceID: workspaceUUID, InstallationID: installationID, AgentID: agentID,
-		IssueID: issueID, Content: body.Content, Post: body.Post, IdempotencyKey: body.IdempotencyKey,
+		IssueID: issueID, SourceTaskID: sourceTaskID, ParentCommentID: parentCommentID,
+		Content: body.Content, Post: body.Post, IdempotencyKey: body.IdempotencyKey,
 		ReplyPolicy: body.ReplyPolicy,
 	})
 	if err != nil {
@@ -657,4 +664,11 @@ func (h *Handler) CreateLarkDelivery(w http.ResponseWriter, r *http.Request) {
 		"delivery_id":     uuidToString(result.DeliveryID), "message_id": result.MessageID,
 		"duplicate": result.Duplicate,
 	})
+}
+
+func proactiveCommentLineage(task db.AgentTaskQueue, issueID, agentID pgtype.UUID) (pgtype.UUID, pgtype.UUID) {
+	if !task.IssueID.Valid || task.IssueID != issueID || task.AgentID != agentID {
+		return pgtype.UUID{}, pgtype.UUID{}
+	}
+	return task.ID, task.TriggerCommentID
 }

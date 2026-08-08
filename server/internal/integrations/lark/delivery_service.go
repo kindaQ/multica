@@ -16,14 +16,16 @@ import (
 )
 
 type ProactivePushParams struct {
-	WorkspaceID    pgtype.UUID
-	InstallationID pgtype.UUID
-	AgentID        pgtype.UUID
-	IssueID        pgtype.UUID
-	Content        string
-	Post           json.RawMessage
-	IdempotencyKey string
-	ReplyPolicy    string
+	WorkspaceID     pgtype.UUID
+	InstallationID  pgtype.UUID
+	AgentID         pgtype.UUID
+	IssueID         pgtype.UUID
+	SourceTaskID    pgtype.UUID
+	ParentCommentID pgtype.UUID
+	Content         string
+	Post            json.RawMessage
+	IdempotencyKey  string
+	ReplyPolicy     string
 }
 
 type ProactivePushResult struct {
@@ -180,6 +182,7 @@ func (s *DeliveryService) Push(ctx context.Context, p ProactivePushParams) (Proa
 			comment, commentErr := s.q.CreateComment(ctx, db.CreateCommentParams{
 				IssueID: p.IssueID, WorkspaceID: p.WorkspaceID, AuthorType: "agent",
 				AuthorID: p.AgentID, Content: p.Content, Type: "comment",
+				ParentID: p.ParentCommentID, SourceTaskID: p.SourceTaskID,
 			})
 			if commentErr != nil {
 				return ProactivePushResult{}, fmt.Errorf("persist proactive issue comment: %w", commentErr)

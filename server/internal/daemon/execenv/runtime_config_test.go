@@ -72,6 +72,7 @@ func TestRuntimeBriefAdvertisesAutomaticFeishuPush(t *testing.T) {
 		"multica feishu push",
 		"automatically selects the Bot",
 		"--issue-id <issue-id>",
+		"do NOT post a delivery receipt or message ID",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("runtime brief missing %q", want)

@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Lark-handler unit tests focus on the no-config short-circuits —
@@ -20,6 +22,22 @@ import (
 // renders. Happy-path flows (begin device-flow + poll status; token
 // mint + redeem) need a real DB and land alongside the WS hub
 // integration tests in a follow-up commit.
+
+func TestProactiveCommentLineage(t *testing.T) {
+	taskID := parseUUID("11111111-1111-1111-1111-111111111111")
+	issueID := parseUUID("22222222-2222-2222-2222-222222222222")
+	agentID := parseUUID("33333333-3333-3333-3333-333333333333")
+	triggerID := parseUUID("44444444-4444-4444-4444-444444444444")
+	task := db.AgentTaskQueue{ID: taskID, IssueID: issueID, AgentID: agentID, TriggerCommentID: triggerID}
+
+	source, parent := proactiveCommentLineage(task, issueID, agentID)
+	if source != taskID || parent != triggerID {
+		t.Fatalf("lineage = (%v, %v), want (%v, %v)", source, parent, taskID, triggerID)
+	}
+	if source, parent := proactiveCommentLineage(task, pgtype.UUID{Bytes: [16]byte{9}, Valid: true}, agentID); source.Valid || parent.Valid {
+		t.Fatalf("cross-issue lineage must be empty, got (%v, %v)", source, parent)
+	}
+}
 
 func TestRevokeLarkInstallation_NotConfigured(t *testing.T) {
 	h := &Handler{}

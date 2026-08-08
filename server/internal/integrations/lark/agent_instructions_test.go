@@ -18,6 +18,7 @@ func TestBuildAgentBotInstructionsSingleBotSupportsOldCLI(t *testing.T) {
 		"squad: 研发工作流小队",
 		"multica feishu push --installation-id " + installationID,
 		"--issue-id <issue-id>",
+		"Do not post a second comment",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("instructions missing %q:\n%s", want, out)

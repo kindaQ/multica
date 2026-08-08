@@ -41,6 +41,6 @@ func BuildAgentBotInstructions(bots []AgentBotCapability) string {
 		}
 		b.WriteString("\nRun `multica feishu push --installation-id <installation-id-above> --content \"<message>\" --idempotency-key \"<unique-stable-key>\" [--issue-id <issue-id>]`.\n\n")
 	}
-	b.WriteString("Use a different idempotency key for each distinct message. Include `--issue-id` when a quoted reply should return to this agent in that issue; omit it for this agent's chat session.")
+	b.WriteString("Use a different idempotency key for each distinct message. Include `--issue-id` when a quoted reply should return to this agent in that issue; omit it for this agent's chat session. A successful issue-routed push already persists the pushed content as the task's final issue comment. Do not post a second comment containing a delivery receipt or message ID.")
 	return b.String()
 }

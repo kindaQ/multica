@@ -3011,7 +3011,7 @@ func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyCommented(t
 	}
 }
 
-func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T) {
+func TestCompleteTask_CommentTriggered_ReplacesNoReplyOutputWithReaction(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -3059,7 +3059,7 @@ func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T)
 
 	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
-		map[string]any{"output": "Done."},
+		map[string]any{"output": "REACTION: 😂"},
 		testWorkspaceID, "legit-daemon")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("taskId", taskID)
@@ -3078,7 +3078,17 @@ func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T)
 		t.Fatalf("count agent comments: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("expected no synthesized agent comment for trivial Done output, got %d", count)
+		t.Fatalf("expected no synthesized agent comment for Reaction output, got %d", count)
+	}
+	var emoji string
+	if err := testPool.QueryRow(ctx, `
+		SELECT emoji FROM comment_reaction
+		WHERE comment_id = $1 AND actor_type = 'agent' AND actor_id = $2
+	`, triggerCommentID, agentID).Scan(&emoji); err != nil {
+		t.Fatalf("load agent reaction: %v", err)
+	}
+	if emoji != "😂" {
+		t.Fatalf("reaction emoji = %q, want 😂", emoji)
 	}
 }
 
