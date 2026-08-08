@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -1838,6 +1839,36 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 					sourceTaskID = taskUUID
 				}
 			}
+		}
+	}
+
+	// An issue-routed Feishu push persists its exact outbound content as the
+	// task's result comment. Agents may still follow the generic "post a final
+	// comment" instruction and submit a delivery receipt afterwards. Treat that
+	// second write as an idempotent replay of the existing result so one action
+	// cannot create both the message and a "sent (message_id...)" comment.
+	if sourceTaskID.Valid {
+		existing, existingErr := h.Queries.GetSentProactiveIssueCommentForTask(r.Context(), db.GetSentProactiveIssueCommentForTaskParams{
+			TaskID: sourceTaskID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		})
+		switch {
+		case existingErr == nil:
+			if len(attachmentIDs) > 0 {
+				h.linkAttachmentsByIDs(r.Context(), existing.ID, issue.ID, attachmentIDs)
+			}
+			reactions := h.groupReactions(r, []pgtype.UUID{existing.ID})
+			attachments := h.groupAttachments(r, []pgtype.UUID{existing.ID})
+			resp := commentToResponse(existing, reactions[uuidToString(existing.ID)], attachments[uuidToString(existing.ID)])
+			w.Header().Set("X-Multica-Comment-Reused", "feishu-proactive-result")
+			slog.Info("reused proactive Feishu result comment", append(logger.RequestAttrs(r),
+				"comment_id", uuidToString(existing.ID), "task_id", uuidToString(sourceTaskID), "issue_id", issueID)...)
+			writeJSON(w, http.StatusOK, resp)
+			return
+		case !errors.Is(existingErr, pgx.ErrNoRows):
+			slog.Warn("lookup proactive Feishu result comment failed", append(logger.RequestAttrs(r),
+				"task_id", uuidToString(sourceTaskID), "issue_id", issueID, "error", existingErr)...)
+			writeError(w, http.StatusInternalServerError, "failed to check existing task result")
+			return
 		}
 	}
 

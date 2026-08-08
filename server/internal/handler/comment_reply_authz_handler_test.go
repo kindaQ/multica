@@ -84,6 +84,87 @@ func TestCreateComment_TriggeredTaskAllowsReplyUnderTrigger(t *testing.T) {
 	}
 }
 
+// An issue-routed Feishu push already stores the exact outbound body as the
+// task's result comment. If the agent then follows the generic comment step and
+// posts a delivery receipt, CreateComment must reuse the existing result rather
+// than creating a second user-visible comment.
+func TestCreateComment_ReusesSentProactiveFeishuResult(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	fx := newRunningSquadLeaderTaskFixture(t)
+	ctx := context.Background()
+	var resultCommentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO comment (
+			issue_id, workspace_id, author_type, author_id, content, type,
+			parent_id, source_task_id
+		) VALUES ($1, $2, 'agent', $3, 'fruit joke', 'comment', $4, $5)
+		RETURNING id
+	`, fx.IssueID, testWorkspaceID, fx.LeaderID, fx.TriggerCommentID, fx.TaskID).Scan(&resultCommentID); err != nil {
+		t.Fatalf("create proactive result comment: %v", err)
+	}
+
+	var deliveryID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO channel_delivery (
+			workspace_id, installation_id, channel_type, kind, route_type,
+			reply_policy, issue_id, agent_id, destination_channel_user_id, status
+		) VALUES ($1, gen_random_uuid(), 'feishu', 'proactive_push', 'issue',
+			'issue_route', $2, $3, 'ou_test', 'sent')
+		RETURNING id
+	`, testWorkspaceID, fx.IssueID, fx.LeaderID).Scan(&deliveryID); err != nil {
+		t.Fatalf("create proactive delivery: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM channel_delivery_message WHERE delivery_id = $1`, deliveryID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM channel_delivery WHERE id = $1`, deliveryID)
+	})
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO channel_delivery_message (
+			delivery_id, source_comment_id, idempotency_key, channel_message_id,
+			status, sent_at
+		) VALUES ($1, $2, 'fruit-joke', 'om_fruit_joke', 'sent', now())
+	`, deliveryID, resultCommentID); err != nil {
+		t.Fatalf("create proactive delivery message: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	r := newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
+		"content":   "Sent through Feishu (message_id: om_fruit_joke)",
+		"parent_id": fx.TriggerCommentID,
+	})
+	r = withURLParam(r, "id", fx.IssueID)
+	r.Header.Set("X-Agent-ID", fx.LeaderID)
+	r.Header.Set("X-Task-ID", fx.TaskID)
+
+	testHandler.CreateComment(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("CreateComment receipt replay: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Multica-Comment-Reused"); got != "feishu-proactive-result" {
+		t.Fatalf("reuse header = %q", got)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode reused comment: %v", err)
+	}
+	if body["id"] != resultCommentID || body["content"] != "fruit joke" {
+		t.Fatalf("expected original proactive comment, got %+v", body)
+	}
+	var count int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND source_task_id = $2 AND author_type = 'agent'
+	`, fx.IssueID, fx.TaskID).Scan(&count); err != nil {
+		t.Fatalf("count task comments: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one task comment after receipt replay, got %d", count)
+	}
+}
+
 // TestCreateComment_TriggeredTaskRejectsForeignParent covers the resumed-session
 // drift in GH #6264: the task passes a --parent that is a real comment on its
 // own issue but not one this run was given to answer. The refusal must name

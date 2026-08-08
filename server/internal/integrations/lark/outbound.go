@@ -284,6 +284,7 @@ func (p *Patcher) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventTaskCancelled, p.handleEvent)
 	bus.Subscribe(protocol.EventTaskCompleted, p.handleEvent)
 	bus.Subscribe(protocol.EventCommentCreated, p.handleEvent)
+	bus.Subscribe(protocol.EventReactionAdded, p.handleEvent)
 	bus.Subscribe(protocol.EventChatDone, p.handleEvent)
 }
 
@@ -306,6 +307,9 @@ func (p *Patcher) handleEvent(e events.Event) {
 func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	if e.Type == protocol.EventCommentCreated {
 		return p.processIssueComment(ctx, e)
+	}
+	if e.Type == protocol.EventReactionAdded {
+		return p.processIssueReaction(ctx, e)
 	}
 	taskID, chatSessionID, ok := taskAndSessionFromEvent(e)
 	if !ok {
@@ -387,6 +391,83 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	return nil
 }
 
+func (p *Patcher) processIssueReaction(ctx context.Context, e events.Event) error {
+	if e.ActorType != "agent" {
+		return nil
+	}
+	taskID := pgtype.UUID{}
+	if err := taskID.Scan(e.TaskID); err != nil || !taskID.Valid {
+		return nil
+	}
+	root, ok := e.Payload.(map[string]any)
+	if !ok {
+		return nil
+	}
+	reaction, ok := root["reaction"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	emojiType, ok := feishuReactionType(stringValue(reaction["emoji"]))
+	if !ok {
+		return fmt.Errorf("unsupported Feishu reaction emoji %q", stringValue(reaction["emoji"]))
+	}
+
+	dq, ok := p.queries.(deliveryQueries)
+	if !ok {
+		return nil
+	}
+	deliveries, err := dq.ListChannelDeliveriesByTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("list reaction deliveries: %w", err)
+	}
+	for _, delivery := range deliveries {
+		if delivery.ChannelType != channelTypeFeishu || delivery.RouteType != "issue" || delivery.Status == "cancelled" || !delivery.DestinationMessageID.Valid {
+			continue
+		}
+		inst, err := p.queries.GetLarkInstallation(ctx, delivery.InstallationID)
+		if err != nil {
+			return fmt.Errorf("load reaction installation: %w", err)
+		}
+		if InstallationStatus(inst.Status) != InstallationActive {
+			continue
+		}
+		creds, err := p.installationCredentials(inst)
+		if err != nil {
+			return err
+		}
+		if _, err := p.client.AddMessageReaction(ctx, AddReactionParams{
+			InstallationID: creds,
+			MessageID:      delivery.DestinationMessageID.String,
+			EmojiType:      emojiType,
+		}); err != nil {
+			return fmt.Errorf("add Feishu result reaction: %w", err)
+		}
+		if _, err := dq.SetChannelDeliveryStatus(ctx, db.SetChannelDeliveryStatusParams{
+			ID: delivery.ID, Status: "sent", TerminalReason: textOrNull("reaction"),
+		}); err != nil {
+			return fmt.Errorf("mark reaction delivery sent: %w", err)
+		}
+	}
+	return nil
+}
+
+// Feishu reactions use platform enum names rather than Unicode. Keep the
+// model-facing choices intentionally small so the reaction shown in Multica
+// can be mirrored exactly instead of being approximated by another face.
+func feishuReactionType(emoji string) (string, bool) {
+	types := map[string]string{
+		"👍":  "THUMBSUP",
+		"😂":  "LAUGH",
+		"😊":  "SMILE",
+		"❤️": "HEART",
+		"❤":  "HEART",
+		"👏":  "APPLAUSE",
+		"🎉":  "PARTY",
+	}
+	t, ok := types[strings.TrimSpace(emoji)]
+	return t, ok
+}
+
 func (p *Patcher) ensureChatDelivery(ctx context.Context, dq deliveryQueries, inst Installation, binding ChatSessionBinding, taskID pgtype.UUID) (db.ChannelDelivery, error) {
 	row, err := dq.GetOrCreateChannelDelivery(ctx, db.GetOrCreateChannelDeliveryParams{
 		WorkspaceID: inst.WorkspaceID, InstallationID: inst.ID, ChannelType: channelTypeFeishu,
@@ -431,7 +512,10 @@ func (p *Patcher) processIssueComment(ctx context.Context, e events.Event) error
 		return fmt.Errorf("list issue deliveries: %w", err)
 	}
 	for _, delivery := range deliveries {
-		if delivery.RouteType != "issue" || delivery.Status == "cancelled" {
+		if delivery.ChannelType != channelTypeFeishu || delivery.RouteType != "issue" || delivery.Status == "cancelled" {
+			continue
+		}
+		if delivery.Status == "sent" && delivery.TerminalReason.Valid && delivery.TerminalReason.String == "reaction" {
 			continue
 		}
 		if err := p.sendDeliveryMessage(ctx, dq, delivery, comment.id, "comment:"+uuidString(comment.id), comment.content, p.deliveryFooter(ctx, delivery)); err != nil {
@@ -451,7 +535,13 @@ func (p *Patcher) processIssueTerminal(ctx context.Context, taskID pgtype.UUID, 
 		return fmt.Errorf("list terminal deliveries: %w", err)
 	}
 	for _, delivery := range deliveries {
-		if delivery.RouteType != "issue" || delivery.Status == "cancelled" {
+		if delivery.ChannelType != channelTypeFeishu || delivery.RouteType != "issue" || delivery.Status == "cancelled" {
+			continue
+		}
+		// A reaction-only result is already visible on the user's original
+		// Feishu message. Do not turn the subsequent task:completed event into
+		// the generic "no visible reply" text message.
+		if delivery.Status == "sent" && delivery.TerminalReason.Valid && delivery.TerminalReason.String == "reaction" {
 			continue
 		}
 		status, reason := "sent", "completed"

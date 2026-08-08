@@ -1048,6 +1048,26 @@ SELECT * FROM channel_delivery_message
 WHERE delivery_id = $1
 ORDER BY ordinal ASC, created_at ASC;
 
+-- name: GetSentProactiveIssueCommentForTask :one
+-- A successful issue-routed proactive push already persisted the task's
+-- user-visible result as a comment. CreateComment uses this lookup to make a
+-- later agent `issue comment add` idempotent instead of storing a delivery
+-- receipt as a second comment.
+SELECT c.*
+FROM comment c
+JOIN channel_delivery_message m ON m.source_comment_id = c.id
+JOIN channel_delivery d ON d.id = m.delivery_id
+WHERE c.source_task_id = @task_id
+  AND c.issue_id = @issue_id
+  AND c.workspace_id = @workspace_id
+  AND d.workspace_id = @workspace_id
+  AND d.channel_type = 'feishu'
+  AND d.kind = 'proactive_push'
+  AND d.route_type = 'issue'
+  AND m.status = 'sent'
+ORDER BY m.sent_at DESC NULLS LAST, m.created_at DESC
+LIMIT 1;
+
 -- name: SetChannelDeliveryStatus :execrows
 UPDATE channel_delivery
 SET status = @status,

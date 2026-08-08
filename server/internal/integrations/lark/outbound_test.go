@@ -98,6 +98,7 @@ type fakeAPIClient struct {
 	mdCardErr      error
 	mdCardReturn   string
 	bindingSent    []BindingPromptParams
+	reactionsAdded []AddReactionParams
 	// threadReplyErr, when non-nil, is returned by the three send
 	// methods whenever the call carries a thread ReplyTarget, while the
 	// attempt is still recorded. Tests inject either a classified
@@ -172,6 +173,9 @@ func (f *fakeAPIClient) BatchGetUsers(ctx context.Context, creds InstallationCre
 	return nil, nil
 }
 func (f *fakeAPIClient) AddMessageReaction(ctx context.Context, p AddReactionParams) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reactionsAdded = append(f.reactionsAdded, p)
 	return "fake-reaction-id", nil
 }
 func (f *fakeAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReactionParams) error {
@@ -203,6 +207,104 @@ func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient
 		Now:    time.Now,
 	})
 	return p, q, api
+}
+
+type fakeIssueDeliveryQueries struct {
+	*fakePatcherQueries
+	deliveries    []db.ChannelDelivery
+	statusUpdates []db.SetChannelDeliveryStatusParams
+}
+
+func (f *fakeIssueDeliveryQueries) GetOrCreateChannelDelivery(context.Context, db.GetOrCreateChannelDeliveryParams) (db.GetOrCreateChannelDeliveryRow, error) {
+	return db.GetOrCreateChannelDeliveryRow{}, nil
+}
+
+func (f *fakeIssueDeliveryQueries) ListChannelDeliveriesByTask(context.Context, pgtype.UUID) ([]db.ChannelDelivery, error) {
+	return append([]db.ChannelDelivery(nil), f.deliveries...), nil
+}
+
+func (f *fakeIssueDeliveryQueries) ListChannelDeliveryMessages(context.Context, pgtype.UUID) ([]db.ChannelDeliveryMessage, error) {
+	return nil, nil
+}
+
+func (f *fakeIssueDeliveryQueries) CreateChannelDeliveryMessage(context.Context, db.CreateChannelDeliveryMessageParams) (db.ChannelDeliveryMessage, error) {
+	return db.ChannelDeliveryMessage{}, nil
+}
+
+func (f *fakeIssueDeliveryQueries) MarkChannelDeliveryMessageSent(context.Context, db.MarkChannelDeliveryMessageSentParams) (int64, error) {
+	return 1, nil
+}
+
+func (f *fakeIssueDeliveryQueries) MarkChannelDeliveryMessageFailed(context.Context, db.MarkChannelDeliveryMessageFailedParams) (int64, error) {
+	return 1, nil
+}
+
+func (f *fakeIssueDeliveryQueries) SetChannelDeliveryStatus(_ context.Context, arg db.SetChannelDeliveryStatusParams) (int64, error) {
+	f.statusUpdates = append(f.statusUpdates, arg)
+	for i := range f.deliveries {
+		if f.deliveries[i].ID == arg.ID {
+			f.deliveries[i].Status = arg.Status
+			f.deliveries[i].TerminalReason = arg.TerminalReason
+		}
+	}
+	return 1, nil
+}
+
+func TestPatcherMirrorsNoReplyReactionToFeishuWithoutTerminalText(t *testing.T) {
+	base := &fakePatcherQueries{
+		installation: Installation{
+			ID:                 uuidFromString(t, "1111aaaa-1111-1111-1111-111111111111"),
+			AppID:              "cli_test_app",
+			AppSecretEncrypted: []byte("ciphertext"),
+			Status:             string(InstallationActive),
+		},
+	}
+	taskID := uuidFromString(t, "ee888888-ee88-ee88-ee88-eeeeeeeeeeee")
+	deliveryID := uuidFromString(t, "dd888888-dd88-dd88-dd88-dddddddddddd")
+	q := &fakeIssueDeliveryQueries{
+		fakePatcherQueries: base,
+		deliveries: []db.ChannelDelivery{{
+			ID:                   deliveryID,
+			InstallationID:       base.installation.ID,
+			ChannelType:          channelTypeFeishu,
+			RouteType:            "issue",
+			Status:               "pending",
+			DestinationMessageID: pgtype.Text{String: "om_user_reply", Valid: true},
+		}},
+	}
+	api := &fakeAPIClient{}
+	p := NewPatcher(q, fakeCredentials{secret: "shh"}, api, PatcherConfig{Logger: newDiscardLogger()})
+
+	p.handleEvent(events.Event{
+		Type:      protocol.EventReactionAdded,
+		TaskID:    uuidString(taskID),
+		ActorType: "agent",
+		Payload: map[string]any{"reaction": map[string]any{
+			"emoji": "😂",
+		}},
+	})
+	p.handleEvent(events.Event{
+		Type:   protocol.EventTaskCompleted,
+		TaskID: uuidString(taskID),
+		Payload: map[string]any{
+			"task_id": uuidString(taskID),
+		},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.reactionsAdded) != 1 {
+		t.Fatalf("expected one Feishu reaction, got %d", len(api.reactionsAdded))
+	}
+	if got := api.reactionsAdded[0]; got.MessageID != "om_user_reply" || got.EmojiType != "LAUGH" {
+		t.Fatalf("reaction = %+v, want LAUGH on om_user_reply", got)
+	}
+	if len(api.textSent) != 0 || len(api.mdCardSent) != 0 {
+		t.Fatalf("reaction-only completion must not send terminal text; text=%d markdown=%d", len(api.textSent), len(api.mdCardSent))
+	}
+	if len(q.statusUpdates) != 1 || q.statusUpdates[0].Status != "sent" || q.statusUpdates[0].TerminalReason.String != "reaction" {
+		t.Fatalf("delivery must be completed by reaction; updates=%+v", q.statusUpdates)
+	}
 }
 
 // TestPatcherSendsPlainTextOnChatDone pins the new behaviour Bohan asked

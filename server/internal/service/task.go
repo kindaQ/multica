@@ -4893,6 +4893,7 @@ func (s *TaskService) createAgentReaction(ctx context.Context, task db.AgentTask
 	s.Bus.Publish(events.Event{
 		Type: protocol.EventReactionAdded, WorkspaceID: util.UUIDToString(issue.WorkspaceID),
 		ActorType: "agent", ActorID: util.UUIDToString(task.AgentID),
+		TaskID: util.UUIDToString(task.ID),
 		Payload: map[string]any{
 			"reaction": map[string]any{
 				"id": util.UUIDToString(reaction.ID), "comment_id": util.UUIDToString(reaction.CommentID),
