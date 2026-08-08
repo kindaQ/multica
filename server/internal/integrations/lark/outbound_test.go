@@ -223,10 +223,6 @@ func (f *fakeIssueDeliveryQueries) ListChannelDeliveriesByTask(context.Context, 
 	return append([]db.ChannelDelivery(nil), f.deliveries...), nil
 }
 
-func (f *fakeIssueDeliveryQueries) ListChannelDeliveryMessages(context.Context, pgtype.UUID) ([]db.ChannelDeliveryMessage, error) {
-	return nil, nil
-}
-
 func (f *fakeIssueDeliveryQueries) CreateChannelDeliveryMessage(context.Context, db.CreateChannelDeliveryMessageParams) (db.ChannelDeliveryMessage, error) {
 	return db.ChannelDeliveryMessage{}, nil
 }
@@ -304,6 +300,37 @@ func TestPatcherMirrorsNoReplyReactionToFeishuWithoutTerminalText(t *testing.T) 
 	}
 	if len(q.statusUpdates) != 1 || q.statusUpdates[0].Status != "sent" || q.statusUpdates[0].TerminalReason.String != "reaction" {
 		t.Fatalf("delivery must be completed by reaction; updates=%+v", q.statusUpdates)
+	}
+}
+
+func TestPatcherSuccessfulIssueTaskNeverSendsTerminalFallback(t *testing.T) {
+	base := &fakePatcherQueries{}
+	taskID := uuidFromString(t, "ee999999-ee99-ee99-ee99-eeeeeeeeeeee")
+	workspaceID := uuidFromString(t, "aa999999-9999-4999-8999-999999999999")
+	issueID := uuidFromString(t, "bb999999-9999-4999-8999-999999999999")
+	deliveryID := uuidFromString(t, "dd999999-dd99-dd99-dd99-dddddddddddd")
+	q := &fakeIssueDeliveryQueries{
+		fakePatcherQueries: base,
+		deliveries: []db.ChannelDelivery{{
+			ID: deliveryID, WorkspaceID: workspaceID, IssueID: issueID,
+			ChannelType: channelTypeFeishu, RouteType: "issue", Status: "pending",
+		}},
+	}
+	api := &fakeAPIClient{}
+	p := NewPatcher(q, fakeCredentials{secret: "shh"}, api, PatcherConfig{Logger: newDiscardLogger()})
+
+	p.handleEvent(events.Event{
+		Type: protocol.EventTaskCompleted, TaskID: uuidString(taskID),
+		Payload: map[string]any{"task_id": uuidString(taskID)},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 0 || len(api.mdCardSent) != 0 {
+		t.Fatalf("successful issue completion must never send terminal fallback; text=%d markdown=%d", len(api.textSent), len(api.mdCardSent))
+	}
+	if len(q.statusUpdates) != 1 || q.statusUpdates[0].Status != "sent" || q.statusUpdates[0].TerminalReason.String != "completed" {
+		t.Fatalf("conversation delivery should complete without fallback; updates=%+v", q.statusUpdates)
 	}
 }
 

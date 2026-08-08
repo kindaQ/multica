@@ -161,7 +161,6 @@ type PatcherQueries interface {
 type deliveryQueries interface {
 	GetOrCreateChannelDelivery(context.Context, db.GetOrCreateChannelDeliveryParams) (db.GetOrCreateChannelDeliveryRow, error)
 	ListChannelDeliveriesByTask(context.Context, pgtype.UUID) ([]db.ChannelDelivery, error)
-	ListChannelDeliveryMessages(context.Context, pgtype.UUID) ([]db.ChannelDeliveryMessage, error)
 	CreateChannelDeliveryMessage(context.Context, db.CreateChannelDeliveryMessageParams) (db.ChannelDeliveryMessage, error)
 	MarkChannelDeliveryMessageSent(context.Context, db.MarkChannelDeliveryMessageSentParams) (int64, error)
 	MarkChannelDeliveryMessageFailed(context.Context, db.MarkChannelDeliveryMessageFailedParams) (int64, error)
@@ -552,17 +551,9 @@ func (p *Patcher) processIssueTerminal(ctx context.Context, taskID pgtype.UUID, 
 		case protocol.EventTaskCancelled:
 			status, reason, terminalText = "cancelled", "cancelled", "该任务已取消。"
 		case protocol.EventTaskCompleted:
-			messages, listErr := dq.ListChannelDeliveryMessages(ctx, delivery.ID)
-			if listErr != nil {
-				return fmt.Errorf("list delivery messages: %w", listErr)
-			}
-			hasOutput := false
-			for _, message := range messages {
-				hasOutput = hasOutput || message.Status == "sent"
-			}
-			if !hasOutput {
-				terminalText = "智能体已完成任务，但没有产生可见回复。"
-			}
+			// A successful task may have replied with a comment, a proactive
+			// push, or a Reaction, or may intentionally stay silent. Completion
+			// itself is never a user-visible message.
 		default:
 			continue
 		}
