@@ -1048,11 +1048,12 @@ SELECT * FROM channel_delivery_message
 WHERE delivery_id = $1
 ORDER BY ordinal ASC, created_at ASC;
 
--- name: GetSentProactiveIssueCommentForTask :one
+-- name: GetSentProactiveIssueCommentForTaskAndKey :one
 -- A successful issue-routed proactive push already persisted the task's
--- user-visible result as a comment. CreateComment uses this lookup to make a
--- later agent `issue comment add` idempotent instead of storing a delivery
--- receipt as a second comment.
+-- user-visible result as a comment. Reuse it only when the caller explicitly
+-- names that exact delivery request key. A task may legitimately publish
+-- several notifications and ordinary issue comments, so task_id alone is
+-- provenance, never an idempotency key.
 SELECT c.*
 FROM comment c
 JOIN channel_delivery_message m ON m.source_comment_id = c.id
@@ -1061,6 +1062,7 @@ WHERE c.source_task_id = @task_id
   AND c.issue_id = @issue_id
   AND c.workspace_id = @workspace_id
   AND d.workspace_id = @workspace_id
+  AND d.request_key = @request_key
   AND d.channel_type = 'feishu'
   AND d.kind = 'proactive_push'
   AND d.route_type = 'issue'

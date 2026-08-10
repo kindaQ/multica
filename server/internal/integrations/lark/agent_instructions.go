@@ -41,6 +41,7 @@ func BuildAgentBotInstructions(bots []AgentBotCapability) string {
 		}
 		b.WriteString("\nRun `multica feishu push --installation-id <installation-id-above> --content \"<message>\" --idempotency-key \"<unique-stable-key>\" [--issue-id <issue-id>]`.\n\n")
 	}
-	b.WriteString("Use a different idempotency key for each distinct message. Include `--issue-id` when a quoted reply should return to this agent in that issue; omit it for this agent's chat session. A successful issue-routed push already persists the pushed content as the task's final issue comment. Do not post a second comment containing a delivery receipt or message ID.")
+	b.WriteString("Use a different idempotency key for each distinct message. Include `--issue-id` when a quoted reply should return to this agent in that issue; omit it for this agent's chat session. A successful issue-routed push already persists the pushed content as the task's final issue comment. Do not post a second comment containing a delivery receipt or message ID.\n\n")
+	b.WriteString("All Multica operations must use the `multica` CLI. Never read `~/.multica/config.json`, profile files, environment variables, or any other credential source to obtain or reuse a Multica token. Never call Multica HTTP endpoints with `curl`, `wget`, Python, Node.js, or another native command. If a `multica` CLI command fails or returns an unexpected result, preserve and report that CLI result; do not probe the server with raw API reads or test writes.")
 	return b.String()
 }

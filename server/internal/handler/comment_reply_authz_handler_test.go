@@ -85,9 +85,10 @@ func TestCreateComment_TriggeredTaskAllowsReplyUnderTrigger(t *testing.T) {
 }
 
 // An issue-routed Feishu push already stores the exact outbound body as the
-// task's result comment. If the agent then follows the generic comment step and
-// posts a delivery receipt, CreateComment must reuse the existing result rather
-// than creating a second user-visible comment.
+// task's result comment. If a caller explicitly identifies that delivery while
+// recording a receipt, CreateComment must reuse the existing result rather than
+// creating a second user-visible comment. Ordinary comments from the same task
+// must remain independent.
 func TestCreateComment_ReusesSentProactiveFeishuResult(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -109,9 +110,9 @@ func TestCreateComment_ReusesSentProactiveFeishuResult(t *testing.T) {
 	var deliveryID string
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO channel_delivery (
-			workspace_id, installation_id, channel_type, kind, route_type,
+			workspace_id, installation_id, channel_type, kind, request_key, route_type,
 			reply_policy, issue_id, agent_id, destination_channel_user_id, status
-		) VALUES ($1, gen_random_uuid(), 'feishu', 'proactive_push', 'issue',
+		) VALUES ($1, gen_random_uuid(), 'feishu', 'proactive_push', 'fruit-joke', 'issue',
 			'issue_route', $2, $3, 'ou_test', 'sent')
 		RETURNING id
 	`, testWorkspaceID, fx.IssueID, fx.LeaderID).Scan(&deliveryID); err != nil {
@@ -132,8 +133,9 @@ func TestCreateComment_ReusesSentProactiveFeishuResult(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
-		"content":   "Sent through Feishu (message_id: om_fruit_joke)",
-		"parent_id": fx.TriggerCommentID,
+		"content":            "Sent through Feishu (message_id: om_fruit_joke)",
+		"parent_id":          fx.TriggerCommentID,
+		"reuse_delivery_key": "fruit-joke",
 	})
 	r = withURLParam(r, "id", fx.IssueID)
 	r.Header.Set("X-Agent-ID", fx.LeaderID)
@@ -162,6 +164,35 @@ func TestCreateComment_ReusesSentProactiveFeishuResult(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected one task comment after receipt replay, got %d", count)
+	}
+
+	// The same task may subsequently publish a semantically different workflow
+	// result. Without an explicit reuse key it must create a new comment instead
+	// of replaying the most recent Feishu notification (PEN-16 regression).
+	w = httptest.NewRecorder()
+	r = newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
+		"content":   "requirement stage result",
+		"parent_id": fx.TriggerCommentID,
+	})
+	r = withURLParam(r, "id", fx.IssueID)
+	r.Header.Set("X-Agent-ID", fx.LeaderID)
+	r.Header.Set("X-Task-ID", fx.TaskID)
+
+	testHandler.CreateComment(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment ordinary result: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Multica-Comment-Reused"); got != "" {
+		t.Fatalf("ordinary result unexpectedly reused a Feishu comment: %q", got)
+	}
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND source_task_id = $2 AND author_type = 'agent'
+	`, fx.IssueID, fx.TaskID).Scan(&count); err != nil {
+		t.Fatalf("count task comments after ordinary result: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected proactive notification plus ordinary result, got %d comments", count)
 	}
 }
 

@@ -1456,6 +1456,7 @@ type CreateCommentRequest struct {
 	ParentID         *string  `json:"parent_id"`
 	AttachmentIDs    []string `json:"attachment_ids"`
 	SuppressAgentIDs []string `json:"suppress_agent_ids"`
+	ReuseDeliveryKey string   `json:"reuse_delivery_key,omitempty"`
 }
 
 type CommentTriggerPreviewRequest struct {
@@ -1842,14 +1843,19 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// An issue-routed Feishu push persists its exact outbound content as the
-	// task's result comment. Agents may still follow the generic "post a final
-	// comment" instruction and submit a delivery receipt afterwards. Treat that
-	// second write as an idempotent replay of the existing result so one action
-	// cannot create both the message and a "sent (message_id...)" comment.
-	if sourceTaskID.Valid {
-		existing, existingErr := h.Queries.GetSentProactiveIssueCommentForTask(r.Context(), db.GetSentProactiveIssueCommentForTaskParams{
-			TaskID: sourceTaskID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+	// An issue-routed Feishu push already persists its outbound content as an
+	// issue comment. A caller that is explicitly recording a receipt for that
+	// same logical delivery may reuse it by supplying the delivery request key.
+	// Never infer reuse from source_task_id alone: one task legitimately emits
+	// multiple notifications, checkpoints, and stage-result comments.
+	reuseDeliveryKey := strings.TrimSpace(req.ReuseDeliveryKey)
+	if reuseDeliveryKey != "" {
+		if !sourceTaskID.Valid {
+			writeError(w, http.StatusBadRequest, "reuse_delivery_key requires an authenticated agent task")
+			return
+		}
+		existing, existingErr := h.Queries.GetSentProactiveIssueCommentForTaskAndKey(r.Context(), db.GetSentProactiveIssueCommentForTaskAndKeyParams{
+			TaskID: sourceTaskID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, RequestKey: pgtype.Text{String: reuseDeliveryKey, Valid: true},
 		})
 		switch {
 		case existingErr == nil:
@@ -1864,9 +1870,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 				"comment_id", uuidToString(existing.ID), "task_id", uuidToString(sourceTaskID), "issue_id", issueID)...)
 			writeJSON(w, http.StatusOK, resp)
 			return
+		case errors.Is(existingErr, pgx.ErrNoRows):
+			writeError(w, http.StatusConflict, "no sent Feishu delivery matches reuse_delivery_key for this task")
+			return
 		case !errors.Is(existingErr, pgx.ErrNoRows):
 			slog.Warn("lookup proactive Feishu result comment failed", append(logger.RequestAttrs(r),
-				"task_id", uuidToString(sourceTaskID), "issue_id", issueID, "error", existingErr)...)
+				"task_id", uuidToString(sourceTaskID), "issue_id", issueID, "request_key", reuseDeliveryKey, "error", existingErr)...)
 			writeError(w, http.StatusInternalServerError, "failed to check existing task result")
 			return
 		}

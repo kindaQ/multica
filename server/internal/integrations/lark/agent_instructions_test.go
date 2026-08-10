@@ -19,6 +19,9 @@ func TestBuildAgentBotInstructionsSingleBotSupportsOldCLI(t *testing.T) {
 		"multica feishu push --installation-id " + installationID,
 		"--issue-id <issue-id>",
 		"Do not post a second comment",
+		"Never read `~/.multica/config.json`",
+		"Never call Multica HTTP endpoints with `curl`",
+		"do not probe the server with raw API reads or test writes",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("instructions missing %q:\n%s", want, out)

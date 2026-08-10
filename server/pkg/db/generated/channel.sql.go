@@ -1813,7 +1813,7 @@ func (q *Queries) GetProactiveDeliveryByKey(ctx context.Context, arg GetProactiv
 	return i, err
 }
 
-const getSentProactiveIssueCommentForTask = `-- name: GetSentProactiveIssueCommentForTask :one
+const getSentProactiveIssueCommentForTaskAndKey = `-- name: GetSentProactiveIssueCommentForTaskAndKey :one
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id, c.quick_action_id
 FROM comment c
 JOIN channel_delivery_message m ON m.source_comment_id = c.id
@@ -1822,6 +1822,7 @@ WHERE c.source_task_id = $1
   AND c.issue_id = $2
   AND c.workspace_id = $3
   AND d.workspace_id = $3
+  AND d.request_key = $4
   AND d.channel_type = 'feishu'
   AND d.kind = 'proactive_push'
   AND d.route_type = 'issue'
@@ -1830,18 +1831,25 @@ ORDER BY m.sent_at DESC NULLS LAST, m.created_at DESC
 LIMIT 1
 `
 
-type GetSentProactiveIssueCommentForTaskParams struct {
+type GetSentProactiveIssueCommentForTaskAndKeyParams struct {
 	TaskID      pgtype.UUID `json:"task_id"`
 	IssueID     pgtype.UUID `json:"issue_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RequestKey  pgtype.Text `json:"request_key"`
 }
 
 // A successful issue-routed proactive push already persisted the task's
-// user-visible result as a comment. CreateComment uses this lookup to make a
-// later agent `issue comment add` idempotent instead of storing a delivery
-// receipt as a second comment.
-func (q *Queries) GetSentProactiveIssueCommentForTask(ctx context.Context, arg GetSentProactiveIssueCommentForTaskParams) (Comment, error) {
-	row := q.db.QueryRow(ctx, getSentProactiveIssueCommentForTask, arg.TaskID, arg.IssueID, arg.WorkspaceID)
+// user-visible result as a comment. Reuse it only when the caller explicitly
+// names that exact delivery request key. A task may legitimately publish
+// several notifications and ordinary issue comments, so task_id alone is
+// provenance, never an idempotency key.
+func (q *Queries) GetSentProactiveIssueCommentForTaskAndKey(ctx context.Context, arg GetSentProactiveIssueCommentForTaskAndKeyParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, getSentProactiveIssueCommentForTaskAndKey,
+		arg.TaskID,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.RequestKey,
+	)
 	var i Comment
 	err := row.Scan(
 		&i.ID,
