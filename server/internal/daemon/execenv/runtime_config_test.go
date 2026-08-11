@@ -66,16 +66,15 @@ func TestSubIssueCreationSectionPresentForIssueRuns(t *testing.T) {
 	}
 }
 
-func TestRuntimeBriefAdvertisesAutomaticFeishuPush(t *testing.T) {
+func TestRuntimeBriefDoesNotAdvertiseServerOwnedFeishuPush(t *testing.T) {
 	out := buildMetaSkillContent("codex", TaskContextForEnv{AgentID: "agent-1"})
-	for _, want := range []string{
+	for _, forbidden := range []string{
+		"### Feishu notifications",
 		"multica feishu push",
-		"automatically selects the Bot",
-		"--issue-id <issue-id>",
-		"do NOT post a delivery receipt or message ID",
+		"issue-routed push",
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("runtime brief missing %q", want)
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("runtime brief must not contain server-owned capability %q", forbidden)
 		}
 	}
 }

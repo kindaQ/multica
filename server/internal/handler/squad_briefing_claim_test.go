@@ -188,6 +188,7 @@ func TestClaim_SquadFeishuBotInjectedIntoAgentInstructions(t *testing.T) {
 		"## Feishu Notifications",
 		"multica feishu push --installation-id " + installationID,
 		"Feishu instruction squad",
+		"do not also call `multica issue comment add`",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("claimed agent instructions missing %q:\n%s", want, instructions)

@@ -4982,14 +4982,14 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// assertions are file-wide on purpose, so the signal is pinned without
 		// pinning which section carries it.
 		for _, want := range []string{
-			"Decide whether a text reply is warranted",
+			"Decide whether a reply is warranted",
 			// Both outcomes pinned individually (MUL-5442 stage-1 review):
 			// the work-produced arm and the silent-exit arm must each
 			// survive compression, not just the bullet's heading.
 			"produced actual work",
-			"acknowledgment / thanks / sign-off",
-			"do NOT post a comment",
-			"REACTION: <emoji>",
+			"pure acknowledgment / thanks / sign-off",
+			"do NOT reply",
+			"Silence is a valid and preferred way",
 			"Never @mention the agent you are replying to as a thank-you or sign-off",
 		} {
 			if !strings.Contains(s, want) {

@@ -972,8 +972,8 @@ func TestBuildPromptCommentTriggered(t *testing.T) {
 // TestBuildPromptCommentTriggeredByAgent covers the agent-to-agent mention
 // loop signal injected into the per-turn prompt (MUL-1323 / GH#1576). When
 // the triggering comment was posted by another agent, the prompt must name
-// the author, warn against sign-off @mentions, and point at a Reaction as the
-// no-comment exit.
+// the author, warn against sign-off @mentions, and point at silence as a
+// valid exit.
 func TestBuildPromptCommentTriggeredByAgent(t *testing.T) {
 	t.Parallel()
 
@@ -989,7 +989,7 @@ func TestBuildPromptCommentTriggeredByAgent(t *testing.T) {
 	for _, want := range []string{
 		"Another agent (Atlas)",
 		"do not @mention the other agent as a sign-off",
-		"REACTION: <emoji>",
+		"Silence is the preferred way",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q\n---\n%s", want, prompt)

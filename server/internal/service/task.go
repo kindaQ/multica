@@ -261,9 +261,6 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 
 var trivialDoneMarkers = []string{
 	"done",
-	"no reply needed",
-	"no response needed",
-	"pure acknowledgment — no work produced this turn, so no reply warranted",
 	"готово",
 	"готова",
 	"сделано",
@@ -279,12 +276,7 @@ func isTrivialDoneOutput(output string) bool {
 			return true
 		}
 	}
-	if len(normalized) > 320 {
-		return false
-	}
-	noReply := strings.Contains(normalized, "no reply") || strings.Contains(normalized, "no response")
-	noWork := strings.Contains(normalized, "no work") || strings.Contains(normalized, "no action") || strings.Contains(normalized, "acknowledg")
-	return noReply && noWork
+	return false
 }
 
 func reactionEmojiForOutput(output string) (string, bool) {
@@ -303,9 +295,6 @@ func reactionEmojiForOutput(output string) (string, bool) {
 			hasNonASCII = hasNonASCII || r > unicode.MaxASCII
 		}
 		return emoji, hasNonASCII
-	}
-	if isTrivialDoneOutput(output) {
-		return "👍", true
 	}
 	return "", false
 }

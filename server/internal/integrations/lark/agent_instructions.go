@@ -13,9 +13,9 @@ type AgentBotCapability struct {
 }
 
 // BuildAgentBotInstructions renders the server-owned instruction block sent
-// through the existing daemon claim Agent.Instructions field. It deliberately
-// includes installation_id because public/older multica CLIs require that
-// flag before they will send the request to the server.
+// through the existing daemon claim Agent.Instructions field. Keeping this
+// capability server-owned means a daemon connected to a server without native
+// Feishu delivery never advertises a command that server cannot execute.
 func BuildAgentBotInstructions(bots []AgentBotCapability) string {
 	if len(bots) == 0 {
 		return ""
@@ -41,7 +41,6 @@ func BuildAgentBotInstructions(bots []AgentBotCapability) string {
 		}
 		b.WriteString("\nRun `multica feishu push --installation-id <installation-id-above> --content \"<message>\" --idempotency-key \"<unique-stable-key>\" [--issue-id <issue-id>]`.\n\n")
 	}
-	b.WriteString("Use a different idempotency key for each distinct message. Include `--issue-id` when a quoted reply should return to this agent in that issue; omit it for this agent's chat session. A successful issue-routed push already persists the pushed content as the task's final issue comment. Do not post a second comment containing a delivery receipt or message ID.\n\n")
-	b.WriteString("All Multica operations must use the `multica` CLI. Never read `~/.multica/config.json`, profile files, environment variables, or any other credential source to obtain or reuse a Multica token. Never call Multica HTTP endpoints with `curl`, `wget`, Python, Node.js, or another native command. If a `multica` CLI command fails or returns an unexpected result, preserve and report that CLI result; do not probe the server with raw API reads or test writes.")
+	b.WriteString("Use a different idempotency key for each distinct message. Include `--issue-id` when a quoted reply should return to this agent in that issue; omit it for this agent's chat session. If an issue-routed push succeeds, it already persists the pushed content as this task's final issue comment: do not also call `multica issue comment add`, and do not post a delivery receipt or message ID. If the push fails, preserve the error and use the normal issue-comment path for any result that still must be delivered.")
 	return b.String()
 }

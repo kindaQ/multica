@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestBuildAgentBotInstructionsSingleBotSupportsOldCLI(t *testing.T) {
+func TestBuildAgentBotInstructionsSingleBotIncludesExplicitInstallation(t *testing.T) {
 	const installationID = "4bb0b363-1111-2222-3333-444444444444"
 	out := BuildAgentBotInstructions([]AgentBotCapability{{
 		InstallationID: installationID,
@@ -18,10 +18,8 @@ func TestBuildAgentBotInstructionsSingleBotSupportsOldCLI(t *testing.T) {
 		"squad: 研发工作流小队",
 		"multica feishu push --installation-id " + installationID,
 		"--issue-id <issue-id>",
-		"Do not post a second comment",
-		"Never read `~/.multica/config.json`",
-		"Never call Multica HTTP endpoints with `curl`",
-		"do not probe the server with raw API reads or test writes",
+		"do not also call `multica issue comment add`",
+		"If the push fails",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("instructions missing %q:\n%s", want, out)
