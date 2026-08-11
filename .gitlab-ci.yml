@@ -1,0 +1,33 @@
+stages:
+  - release
+
+release_darwin_arm64:
+  stage: release
+  image: golang:1.26.1
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v1\.[0-9]+\.[0-9]+-native-feishu\.[0-9]+$/'
+  variables:
+    CGO_ENABLED: "0"
+  script:
+    - VERSION="${CI_COMMIT_TAG#v}"
+    - COMMIT="$(git rev-parse --short HEAD)"
+    - BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    - ARCHIVE="multica-cli-${VERSION}-darwin-arm64.tar.gz"
+    - mkdir -p dist/package
+    - cd server
+    - go test ./cmd/multica ./internal/daemon/...
+    - GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" -o ../dist/package/multica ./cmd/multica
+    - cd ..
+    - cp LICENSE README.md NOTICE dist/package/
+    - tar -czf "dist/${ARCHIVE}" -C dist/package multica LICENSE README.md NOTICE
+    - sha256sum "dist/${ARCHIVE}" > dist/checksums.txt
+    - PACKAGE_BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/multica-cli/${CI_COMMIT_TAG}"
+    - curl --fail --silent --show-error --header "JOB-TOKEN:${CI_JOB_TOKEN}" --upload-file "dist/${ARCHIVE}" "${PACKAGE_BASE}/${ARCHIVE}"
+    - curl --fail --silent --show-error --header "JOB-TOKEN:${CI_JOB_TOKEN}" --upload-file dist/checksums.txt "${PACKAGE_BASE}/checksums.txt"
+    - RELEASE_PAYLOAD="$(printf '{\"name\":\"Multica %s\",\"tag_name\":\"%s\",\"description\":\"Native Feishu daemon for macOS Apple Silicon.\",\"assets\":{\"links\":[{\"name\":\"%s\",\"url\":\"%s/%s\",\"link_type\":\"package\"},{\"name\":\"checksums.txt\",\"url\":\"%s/checksums.txt\",\"link_type\":\"other\"}]}}' "${CI_COMMIT_TAG}" "${CI_COMMIT_TAG}" "${ARCHIVE}" "${PACKAGE_BASE}" "${ARCHIVE}" "${PACKAGE_BASE}")"
+    - curl --fail --silent --show-error --request POST --header "JOB-TOKEN:${CI_JOB_TOKEN}" --header "Content-Type:application/json" --data "${RELEASE_PAYLOAD}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+  artifacts:
+    paths:
+      - dist/*.tar.gz
+      - dist/checksums.txt
+    expire_in: never
