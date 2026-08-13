@@ -16,6 +16,7 @@ const workspaceRef = vi.hoisted(() => ({
     slug: "test-workspace",
     description: "",
     context: "",
+    settings: {} as Record<string, unknown>,
     issue_prefix: "TES",
     repos: [] as { url: string }[],
   },
@@ -110,6 +111,7 @@ describe("WorkspaceTab — automatic updates", () => {
       slug: "test-workspace",
       description: "",
       context: "",
+      settings: {},
       issue_prefix: "TES",
       repos: [],
     };
@@ -244,5 +246,30 @@ describe("WorkspaceTab — automatic updates", () => {
 
     expect(screen.getByPlaceholderText("TES")).toBeDisabled();
     expect(screen.getByDisplayValue("Test Workspace")).toBeDisabled();
+  });
+
+  it("enables silent-stop monitoring with minute-level schedule settings", async () => {
+    const user = setupUser();
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(
+      screen.getByRole("spinbutton", { name: "Scan interval (minutes)" }),
+    ).toHaveValue(10);
+    await user.click(screen.getByRole("switch", { name: "Silent-stop detection" }));
+
+    await waitFor(() => {
+      expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", {
+        settings: {
+          task_silent_exit_monitor: expect.objectContaining({
+            enabled: true,
+            start_time: "09:00",
+            end_time: "22:00",
+            interval_minutes: 10,
+            enabled_at: expect.any(String),
+            timezone: expect.any(String),
+          }),
+        },
+      });
+    });
   });
 });

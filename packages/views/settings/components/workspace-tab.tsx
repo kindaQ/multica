@@ -5,6 +5,7 @@ import { LogOut } from "lucide-react";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Button } from "@multica/ui/components/ui/button";
+import { Switch } from "@multica/ui/components/ui/switch";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -51,6 +52,59 @@ interface WorkspaceDetailsDraft {
   name: string;
   description: string;
   context: string;
+}
+
+interface TaskSilentExitMonitorSettings {
+  enabled: boolean;
+  timezone: string;
+  start_time: string;
+  end_time: string;
+  interval_minutes: number;
+  enabled_at: string;
+}
+
+const DEFAULT_TASK_SILENT_EXIT_MONITOR: TaskSilentExitMonitorSettings = {
+  enabled: false,
+  timezone: "UTC",
+  start_time: "09:00",
+  end_time: "22:00",
+  interval_minutes: 10,
+  enabled_at: "",
+};
+
+function browserTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function taskSilentExitMonitorSettings(
+  workspace: Workspace | null | undefined,
+): TaskSilentExitMonitorSettings {
+  const raw = workspace?.settings?.task_silent_exit_monitor;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...DEFAULT_TASK_SILENT_EXIT_MONITOR, timezone: browserTimezone() };
+  }
+  const value = raw as Record<string, unknown>;
+  const interval = Number(value.interval_minutes);
+  return {
+    enabled: value.enabled === true,
+    timezone:
+      typeof value.timezone === "string" && value.timezone
+        ? value.timezone
+        : browserTimezone(),
+    start_time:
+      typeof value.start_time === "string"
+        ? value.start_time
+        : DEFAULT_TASK_SILENT_EXIT_MONITOR.start_time,
+    end_time:
+      typeof value.end_time === "string"
+        ? value.end_time
+        : DEFAULT_TASK_SILENT_EXIT_MONITOR.end_time,
+    interval_minutes:
+      Number.isInteger(interval) && interval >= 1 && interval <= 1440
+        ? interval
+        : DEFAULT_TASK_SILENT_EXIT_MONITOR.interval_minutes,
+    enabled_at: typeof value.enabled_at === "string" ? value.enabled_at : "",
+  };
 }
 
 function workspaceDetailsEqual(
@@ -141,6 +195,14 @@ export function WorkspaceTab() {
     onConfirm: () => Promise<void>;
   } | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [monitorSettings, setMonitorSettings] =
+    useState<TaskSilentExitMonitorSettings>(() =>
+      taskSilentExitMonitorSettings(workspace),
+    );
+  const [monitorIntervalInput, setMonitorIntervalInput] = useState(() =>
+    String(taskSilentExitMonitorSettings(workspace).interval_minutes),
+  );
+  const [monitorSaving, setMonitorSaving] = useState(false);
 
   const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
   const canManageWorkspace = currentMember?.role === "owner" || currentMember?.role === "admin";
@@ -164,6 +226,12 @@ export function WorkspaceTab() {
     setIssuePrefix(workspace?.issue_prefix ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on id only; see comment above
   }, [workspace?.id]);
+
+  useEffect(() => {
+    const next = taskSilentExitMonitorSettings(workspace);
+    setMonitorSettings(next);
+    setMonitorIntervalInput(String(next.interval_minutes));
+  }, [workspace?.id, workspace?.settings]);
 
   // Letters + digits only, uppercase, capped at 10 chars. The backend
   // uppercases and trims on its side too — this is purely a UX guardrail
@@ -296,6 +364,56 @@ export function WorkspaceTab() {
     } finally {
       setActionId(null);
     }
+  };
+
+  const persistMonitorSettings = async (
+    next: TaskSilentExitMonitorSettings,
+  ) => {
+    if (!workspace || !canManageWorkspace || monitorSaving) return;
+    setMonitorSettings(next);
+    setMonitorSaving(true);
+    try {
+      const updated = await api.updateWorkspace(workspace.id, {
+        settings: {
+          ...workspace.settings,
+          task_silent_exit_monitor: next,
+        },
+      });
+      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
+        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
+      );
+      toast.success(t(($) => $.workspace.monitor_toast_saved), {
+        id: "task-silent-exit-monitor-save",
+      });
+    } catch (error) {
+      setMonitorSettings(taskSilentExitMonitorSettings(workspace));
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.workspace.monitor_toast_failed),
+      );
+    } finally {
+      setMonitorSaving(false);
+    }
+  };
+
+  const persistMonitorTime = (key: "start_time" | "end_time") => {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(monitorSettings[key])) {
+      setMonitorSettings(taskSilentExitMonitorSettings(workspace));
+      return;
+    }
+    void persistMonitorSettings(monitorSettings);
+  };
+
+  const persistMonitorInterval = () => {
+    const interval = Number(monitorIntervalInput);
+    if (!Number.isInteger(interval) || interval < 1 || interval > 1440) {
+      setMonitorIntervalInput(String(monitorSettings.interval_minutes));
+      return;
+    }
+    const next = { ...monitorSettings, interval_minutes: interval };
+    setMonitorSettings(next);
+    void persistMonitorSettings(next);
   };
 
   if (!workspace) return null;
@@ -461,6 +579,99 @@ export function WorkspaceTab() {
                 {t(($) => $.workspace.manage_hint)}
               </div>
             )}
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t(($) => $.workspace.monitor_section)}>
+        <SettingsCard>
+          <SettingsRow
+            label={t(($) => $.workspace.monitor_enabled_label)}
+            description={t(($) => $.workspace.monitor_enabled_description)}
+          >
+            <Switch
+              checked={monitorSettings.enabled}
+              disabled={!canManageWorkspace || monitorSaving}
+              aria-label={t(($) => $.workspace.monitor_enabled_label)}
+              onCheckedChange={(enabled) => {
+                void persistMonitorSettings({
+                  ...monitorSettings,
+                  enabled,
+                  timezone: browserTimezone(),
+                  enabled_at: enabled
+                    ? new Date().toISOString()
+                    : monitorSettings.enabled_at,
+                });
+              }}
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.workspace.monitor_start_label)}
+            description={t(($) => $.workspace.monitor_time_description, {
+              timezone: monitorSettings.timezone,
+            })}
+            size="text"
+          >
+            <Input
+              type="time"
+              step={60}
+              value={monitorSettings.start_time}
+              disabled={!canManageWorkspace || monitorSaving}
+              aria-label={t(($) => $.workspace.monitor_start_label)}
+              onChange={(event) =>
+                setMonitorSettings((current) => ({
+                  ...current,
+                  start_time: event.target.value,
+                }))
+              }
+              onBlur={() => persistMonitorTime("start_time")}
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.workspace.monitor_end_label)}
+            description={t(($) => $.workspace.monitor_end_description)}
+            size="text"
+          >
+            <Input
+              type="time"
+              step={60}
+              value={monitorSettings.end_time}
+              disabled={!canManageWorkspace || monitorSaving}
+              aria-label={t(($) => $.workspace.monitor_end_label)}
+              onChange={(event) =>
+                setMonitorSettings((current) => ({
+                  ...current,
+                  end_time: event.target.value,
+                }))
+              }
+              onBlur={() => persistMonitorTime("end_time")}
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label={t(($) => $.workspace.monitor_interval_label)}
+            description={t(($) => $.workspace.monitor_interval_description)}
+            size="text"
+          >
+            <Input
+              type="number"
+              min={1}
+              max={1440}
+              step={1}
+              value={monitorIntervalInput}
+              disabled={!canManageWorkspace || monitorSaving}
+              aria-label={t(($) => $.workspace.monitor_interval_label)}
+              onChange={(event) => setMonitorIntervalInput(event.target.value)}
+              onBlur={persistMonitorInterval}
+            />
+          </SettingsRow>
+
+          {!canManageWorkspace && (
+            <div className="px-4 py-3 text-caption text-muted-foreground">
+              {t(($) => $.workspace.manage_hint)}
+            </div>
+          )}
         </SettingsCard>
       </SettingsSection>
 
