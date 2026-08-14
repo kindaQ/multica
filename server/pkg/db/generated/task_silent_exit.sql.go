@@ -62,7 +62,10 @@ WHERE w.id = $1
            AND incoming_delivery.route_type = 'issue'
            AND incoming_delivery.reply_policy = 'issue_route'
            AND incoming_delivery.status = 'sent'
-           AND incoming_delivery.request_key ~ '(^|:)(approval_required|human_required)(:|$)'
+           AND (
+               incoming_delivery.request_key ~ '(^|:)(approval_required|human_required)(:|$)'
+               OR incoming_delivery.request_key LIKE 'task-watchdog:silent-exit:%'
+           )
           WHERE trigger_comment.id = t.trigger_comment_id
             AND trigger_comment.workspace_id = w.id
             AND trigger_comment.issue_id = t.issue_id
