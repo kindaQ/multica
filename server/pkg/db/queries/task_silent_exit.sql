@@ -12,22 +12,26 @@ SELECT
     t.agent_id,
     t.completed_at,
     i.status AS issue_status,
+    i.title AS issue_title,
     i.number AS issue_number,
     w.issue_prefix,
+    w.slug AS workspace_slug,
     a.name AS agent_name,
-    COALESCE(last_output.id, t.trigger_comment_id) AS parent_comment_id
+    COALESCE(last_output.id, t.trigger_comment_id) AS parent_comment_id,
+    COALESCE(last_output.content, NULLIF(t.result->>'output', ''), '') AS last_progress
 FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 JOIN workspace w ON w.id = i.workspace_id
 JOIN agent a ON a.id = t.agent_id
 LEFT JOIN LATERAL (
-    SELECT c.id
+    SELECT c.id, c.content
     FROM comment c
     WHERE c.source_task_id = t.id
       AND c.workspace_id = w.id
       AND c.issue_id = t.issue_id
       AND c.type = 'comment'
       AND c.content NOT LIKE '⚠️ 工作流可能已静默停止%'
+      AND c.content NOT LIKE '⚠️ 工作流可能异常停止，请关注%'
     ORDER BY c.created_at DESC, c.id DESC
     LIMIT 1
 ) last_output ON TRUE
@@ -93,7 +97,10 @@ WHERE w.id = @workspace_id
       WHERE alert_comment.workspace_id = w.id
         AND alert_comment.issue_id = t.issue_id
         AND alert_comment.source_task_id = t.id
-        AND alert_comment.content LIKE '⚠️ 工作流可能已静默停止%'
+        AND (
+            alert_comment.content LIKE '⚠️ 工作流可能已静默停止%'
+            OR alert_comment.content LIKE '⚠️ 工作流可能异常停止，请关注%'
+        )
   )
 ORDER BY t.completed_at ASC
 LIMIT @candidate_limit;

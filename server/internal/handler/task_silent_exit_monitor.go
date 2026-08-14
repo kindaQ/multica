@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	taskSilentExitTickInterval = time.Minute
-	taskSilentExitGracePeriod  = 90 * time.Second
-	taskSilentExitBatchSize    = 100
+	taskSilentExitTickInterval  = time.Minute
+	taskSilentExitGracePeriod   = 90 * time.Second
+	taskSilentExitBatchSize     = 100
+	taskSilentExitProgressRunes = 1400
+	taskSilentExitTruncatedText = "\n……（内容已截断，请打开 Issue 查看完整评论）"
 )
 
 type taskSilentExitQueries interface {
@@ -59,15 +61,16 @@ type parsedTaskSilentExitSchedule struct {
 type TaskSilentExitMonitor struct {
 	queries  taskSilentExitQueries
 	delivery taskSilentExitDelivery
+	appURL   string
 	now      func() time.Time
 
 	mu       sync.Mutex
 	lastSlot map[string]string
 }
 
-func NewTaskSilentExitMonitor(queries *db.Queries, delivery *lark.DeliveryService) *TaskSilentExitMonitor {
+func NewTaskSilentExitMonitor(queries *db.Queries, delivery *lark.DeliveryService, appURL string) *TaskSilentExitMonitor {
 	monitor := &TaskSilentExitMonitor{
-		queries: queries, now: time.Now,
+		queries: queries, appURL: strings.TrimRight(strings.TrimSpace(appURL), "/"), now: time.Now,
 		lastSlot: make(map[string]string),
 	}
 	if delivery != nil {
@@ -142,22 +145,45 @@ func (m *TaskSilentExitMonitor) sweepWorkspace(ctx context.Context, workspaceID 
 		return
 	}
 	for _, candidate := range candidates {
-		m.notifyCandidate(ctx, candidate)
+		m.notifyCandidate(ctx, candidate, schedule.location)
 	}
 }
 
-func (m *TaskSilentExitMonitor) notifyCandidate(ctx context.Context, candidate db.ListSilentExitCandidatesRow) {
+func (m *TaskSilentExitMonitor) notifyCandidate(ctx context.Context, candidate db.ListSilentExitCandidatesRow, location *time.Location) {
 	issueIdentifier := candidate.IssuePrefix + "-" + strconv.Itoa(int(candidate.IssueNumber))
 	taskID := util.UUIDToString(candidate.TaskID)
+	issueLabel := issueIdentifier
+	if title := strings.TrimSpace(candidate.IssueTitle); title != "" {
+		issueLabel += "｜" + escapeMarkdownLinkText(title)
+	}
+	issueReference := issueLabel
+	if m.appURL != "" {
+		issueReference = fmt.Sprintf("[%s](%s/%s/issues/%s)", issueLabel, m.appURL, candidate.WorkspaceSlug, util.UUIDToString(candidate.IssueID))
+	}
+	completedAt := candidate.CompletedAt.Time
+	if location != nil {
+		completedAt = completedAt.In(location)
+	}
+	progress := quoteMarkdown(silentExitProgress(candidate.LastProgress))
 	content := strings.Join([]string{
-		"⚠️ 工作流可能已静默停止",
+		"⚠️ 工作流可能异常停止，请关注",
 		"",
+		"📌【Issue】",
+		issueReference,
+		"",
+		"👤【执行信息】",
 		fmt.Sprintf("执行者：%s", candidate.AgentName),
-		fmt.Sprintf("当前 Issue：%s", issueIdentifier),
-		"检测结果：Agent Task 已完成，但没有发现后续 Task、等待人工通知或最终完成通知。",
-		fmt.Sprintf("Issue 当前状态：%s（仅供参考，不参与静默判定）", candidate.IssueStatus),
+		fmt.Sprintf("Task 完成时间：%s", completedAt.Format("2006-01-02 15:04")),
+		fmt.Sprintf("Issue 状态：%s", candidate.IssueStatus),
 		"",
-		"请直接回复本消息，回复会写回当前 Issue 的评论线程并交给原执行者继续处理。",
+		"📝【卡住前的最后进展】",
+		progress,
+		"",
+		"⚠️【检测结果】",
+		"Task 已完成，但没有发现后续 Task、等待人工通知或最终完成通知，工作流可能停在了这里。",
+		"",
+		"➡️【请人工处理】",
+		fmt.Sprintf("请直接引用本消息回复。回复将写回上述 Issue 的原评论线程，并交给 %s 继续处理。", candidate.AgentName),
 	}, "\n")
 	_, err := m.delivery.Push(ctx, lark.ProactivePushParams{
 		WorkspaceID:     candidate.WorkspaceID,
@@ -176,6 +202,37 @@ func (m *TaskSilentExitMonitor) notifyCandidate(ctx context.Context, candidate d
 			"task_id", util.UUIDToString(candidate.TaskID),
 			"error", err)
 	}
+}
+
+func silentExitProgress(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "Agent 未留下可见评论。"
+	}
+	runes := []rune(content)
+	if len(runes) <= taskSilentExitProgressRunes {
+		return content
+	}
+	marker := []rune(taskSilentExitTruncatedText)
+	return string(runes[:taskSilentExitProgressRunes-len(marker)]) + taskSilentExitTruncatedText
+}
+
+func quoteMarkdown(content string) string {
+	lines := strings.Split(content, "\n")
+	for index, line := range lines {
+		if line == "" {
+			lines[index] = ">"
+		} else {
+			lines[index] = "> " + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func escapeMarkdownLinkText(content string) string {
+	content = strings.ReplaceAll(content, "\\", "\\\\")
+	content = strings.ReplaceAll(content, "[", "\\[")
+	return strings.ReplaceAll(content, "]", "\\]")
 }
 
 func parseTaskSilentExitSchedule(raw []byte, now time.Time) (parsedTaskSilentExitSchedule, error) {

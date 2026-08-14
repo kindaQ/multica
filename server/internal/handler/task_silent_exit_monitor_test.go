@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,13 +113,15 @@ func TestTaskSilentExitMonitorSendsIssueRoutedAlertOncePerSlot(t *testing.T) {
 		}},
 		candidates: []db.ListSilentExitCandidatesRow{{
 			TaskID: taskID, WorkspaceID: workspaceID, IssueID: issueID, AgentID: agentID,
-			IssueStatus: "blocked", IssueNumber: 43, IssuePrefix: "PEN", AgentName: "developer",
-			ParentCommentID: parentID,
+			CompletedAt: pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 1, 59, 0, 0, time.UTC), Valid: true},
+			IssueStatus: "blocked", IssueTitle: "指标中心需求6", IssueNumber: 43, IssuePrefix: "PEN",
+			WorkspaceSlug: "pengqiang", AgentName: "developer", ParentCommentID: parentID,
+			LastProgress: "已完成需求理解。\n当前缺少原型图。",
 		}},
 	}
 	delivery := &fakeTaskSilentExitDelivery{}
 	monitor := &TaskSilentExitMonitor{
-		queries: queries, delivery: delivery, now: func() time.Time { return now }, lastSlot: make(map[string]string),
+		queries: queries, delivery: delivery, appURL: "http://multica.example", now: func() time.Time { return now }, lastSlot: make(map[string]string),
 	}
 
 	monitor.sweep(context.Background())
@@ -139,5 +142,31 @@ func TestTaskSilentExitMonitorSendsIssueRoutedAlertOncePerSlot(t *testing.T) {
 	}
 	if push.IdempotencyKey != "task-watchdog:silent-exit:00000000-0000-0000-0000-000000000004" {
 		t.Fatalf("idempotency key = %q", push.IdempotencyKey)
+	}
+	for _, want := range []string{
+		"⚠️ 工作流可能异常停止，请关注",
+		"[PEN-43｜指标中心需求6](http://multica.example/pengqiang/issues/00000000-0000-0000-0000-000000000002)",
+		"Task 完成时间：2026-08-13 09:59",
+		"> 已完成需求理解。",
+		"> 当前缺少原型图。",
+		"请直接引用本消息回复",
+	} {
+		if !strings.Contains(push.Content, want) {
+			t.Fatalf("content missing %q:\n%s", want, push.Content)
+		}
+	}
+}
+
+func TestSilentExitProgressLimitsOnlyQuotedBody(t *testing.T) {
+	content := strings.Repeat("进", taskSilentExitProgressRunes+50)
+	got := silentExitProgress(content)
+	if len([]rune(got)) != taskSilentExitProgressRunes {
+		t.Fatalf("progress runes = %d, want %d", len([]rune(got)), taskSilentExitProgressRunes)
+	}
+	if !strings.HasSuffix(got, strings.TrimPrefix(taskSilentExitTruncatedText, "\n")) {
+		t.Fatalf("truncation marker missing: %q", got[len(got)-40:])
+	}
+	if quoted := quoteMarkdown("第一行\n\n第三行"); quoted != "> 第一行\n>\n> 第三行" {
+		t.Fatalf("quoted markdown = %q", quoted)
 	}
 }
