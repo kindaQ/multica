@@ -82,7 +82,7 @@ WHERE w.id = @workspace_id
       WHERE outcome_comment.source_task_id = t.id
         AND outcome_comment.workspace_id = w.id
         AND outcome_comment.issue_id = t.issue_id
-        AND outcome_delivery.request_key ~ '(^|:)(approval_required|human_required|completed)(:|$)'
+        AND outcome_delivery.request_key ~ '(^|:)(approval_required|human_required|completed|failed)(:|$)'
   )
   AND NOT EXISTS (
       SELECT 1
