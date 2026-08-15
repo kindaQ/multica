@@ -165,6 +165,9 @@ func (m *TaskSilentExitMonitor) notifyCandidate(ctx context.Context, candidate d
 		completedAt = completedAt.In(location)
 	}
 	progress := quoteMarkdown(silentExitProgress(candidate.LastProgress))
+	if note := silentExitProgressTiming(candidate.LastProgressAt, completedAt, location); note != "" {
+		progress += "\n\n" + note
+	}
 	content := strings.Join([]string{
 		"⚠️ 工作流可能异常停止，请关注",
 		"",
@@ -202,6 +205,33 @@ func (m *TaskSilentExitMonitor) notifyCandidate(ctx context.Context, candidate d
 			"task_id", util.UUIDToString(candidate.TaskID),
 			"error", err)
 	}
+}
+
+func silentExitProgressTiming(commentAt pgtype.Timestamptz, completedAt time.Time, location *time.Location) string {
+	if !commentAt.Valid || completedAt.IsZero() || !completedAt.After(commentAt.Time) {
+		return ""
+	}
+	minutes := int(completedAt.Sub(commentAt.Time).Round(time.Minute) / time.Minute)
+	if minutes < 1 {
+		return ""
+	}
+	publishedAt := commentAt.Time
+	if location != nil {
+		publishedAt = publishedAt.In(location)
+	}
+	return fmt.Sprintf("该评论发布于 %s。Task 随后继续运行约 %s，并于 %s 完成，但没有再发布结果或后续交接。",
+		publishedAt.Format("15:04"), formatSilentExitDuration(minutes), completedAt.Format("15:04"))
+}
+
+func formatSilentExitDuration(minutes int) string {
+	if minutes < 60 {
+		return fmt.Sprintf("%d 分钟", minutes)
+	}
+	hours, remainder := minutes/60, minutes%60
+	if remainder == 0 {
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	return fmt.Sprintf("%d 小时 %d 分钟", hours, remainder)
 }
 
 func silentExitProgress(content string) string {

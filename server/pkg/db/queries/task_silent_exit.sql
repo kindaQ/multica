@@ -18,13 +18,14 @@ SELECT
     w.slug AS workspace_slug,
     a.name AS agent_name,
     COALESCE(last_output.id, t.trigger_comment_id) AS parent_comment_id,
-    COALESCE(last_output.content, NULLIF(t.result->>'output', ''), '') AS last_progress
+    COALESCE(last_output.content, NULLIF(t.result->>'output', ''), '') AS last_progress,
+    last_output.created_at AS last_progress_at
 FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 JOIN workspace w ON w.id = i.workspace_id
 JOIN agent a ON a.id = t.agent_id
 LEFT JOIN LATERAL (
-    SELECT c.id, c.content
+    SELECT c.id, c.content, c.created_at
     FROM comment c
     WHERE c.source_task_id = t.id
       AND c.workspace_id = w.id

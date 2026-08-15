@@ -117,6 +117,9 @@ func TestTaskSilentExitMonitorSendsIssueRoutedAlertOncePerSlot(t *testing.T) {
 			IssueStatus: "blocked", IssueTitle: "指标中心需求6", IssueNumber: 43, IssuePrefix: "PEN",
 			WorkspaceSlug: "pengqiang", AgentName: "developer", ParentCommentID: parentID,
 			LastProgress: "已完成需求理解。\n当前缺少原型图。",
+			LastProgressAt: pgtype.Timestamptz{
+				Time: time.Date(2026, 8, 13, 1, 23, 0, 0, time.UTC), Valid: true,
+			},
 		}},
 	}
 	delivery := &fakeTaskSilentExitDelivery{}
@@ -149,6 +152,7 @@ func TestTaskSilentExitMonitorSendsIssueRoutedAlertOncePerSlot(t *testing.T) {
 		"Task 完成时间：2026-08-13 09:59",
 		"> 已完成需求理解。",
 		"> 当前缺少原型图。",
+		"该评论发布于 09:23。Task 随后继续运行约 36 分钟，并于 09:59 完成，但没有再发布结果或后续交接。",
 		"请直接引用本消息回复",
 	} {
 		if !strings.Contains(push.Content, want) {
