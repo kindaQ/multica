@@ -17,6 +17,10 @@ SELECT
     w.issue_prefix,
     w.slug AS workspace_slug,
     a.name AS agent_name,
+    CASE
+        WHEN t.delegated_from_task_id IS NULL THEN 'user_reply'
+        ELSE 'workflow_handoff'
+    END AS detection_kind,
     COALESCE(last_output.id, t.trigger_comment_id) AS parent_comment_id,
     COALESCE(last_output.content, NULLIF(t.result->>'output', ''), '') AS last_progress,
     last_output.created_at AS last_progress_at
@@ -33,6 +37,20 @@ LEFT JOIN LATERAL (
       AND c.type = 'comment'
       AND c.content NOT LIKE '⚠️ 工作流可能已静默停止%'
       AND c.content NOT LIKE '⚠️ 工作流可能异常停止，请关注%'
+      -- A comment that already reached Feishu is not missing user-visible
+      -- progress. Keep looking for a later/other unsent comment instead of
+      -- quoting the delivered notification back in a watchdog alert.
+      AND NOT EXISTS (
+          SELECT 1
+          FROM channel_delivery_message delivered_message
+          JOIN channel_delivery delivered_delivery
+            ON delivered_delivery.id = delivered_message.delivery_id
+           AND delivered_delivery.workspace_id = w.id
+           AND delivered_delivery.issue_id = t.issue_id
+           AND delivered_delivery.route_type = 'issue'
+          WHERE delivered_message.source_comment_id = c.id
+            AND delivered_message.status = 'sent'
+      )
     ORDER BY c.created_at DESC, c.id DESC
     LIMIT 1
 ) last_output ON TRUE
@@ -55,11 +73,6 @@ WHERE w.id = @workspace_id
            AND incoming_delivery.issue_id = t.issue_id
            AND incoming_delivery.route_type = 'issue'
            AND incoming_delivery.reply_policy = 'issue_route'
-           AND incoming_delivery.status = 'sent'
-           AND (
-               incoming_delivery.request_key ~ '(^|:)(approval_required|human_required)(:|$)'
-               OR incoming_delivery.request_key LIKE 'task-watchdog:silent-exit:%'
-           )
           WHERE trigger_comment.id = t.trigger_comment_id
             AND trigger_comment.workspace_id = w.id
             AND trigger_comment.issue_id = t.issue_id
@@ -82,11 +95,17 @@ WHERE w.id = @workspace_id
        AND outcome_delivery.workspace_id = w.id
        AND outcome_delivery.issue_id = t.issue_id
        AND outcome_delivery.route_type = 'issue'
-       AND outcome_delivery.status = 'sent'
       WHERE outcome_comment.source_task_id = t.id
         AND outcome_comment.workspace_id = w.id
         AND outcome_comment.issue_id = t.issue_id
-        AND outcome_delivery.request_key ~ '(^|:)(approval_required|human_required|completed|failed)(:|$)'
+        AND (
+            -- A task started by a user's reply is closed once that task sends
+            -- any new Feishu message. The user has received a visible result.
+            t.delegated_from_task_id IS NULL
+            -- A delegated workflow task needs a semantic closeout. Progress
+            -- and node_completed notifications do not replace a successor.
+            OR outcome_delivery.request_key ~ '(^|:)(approval_required|human_required|completed|failed|cancelled|canceled)(:|$)'
+        )
   )
   AND NOT EXISTS (
       SELECT 1

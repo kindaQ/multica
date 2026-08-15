@@ -183,7 +183,7 @@ func (m *TaskSilentExitMonitor) notifyCandidate(ctx context.Context, candidate d
 		progress,
 		"",
 		"⚠️【检测结果】",
-		"Task 已完成，但没有发现后续 Task、等待人工通知或最终完成通知，工作流可能停在了这里。",
+		silentExitDetectionResult(candidate.DetectionKind),
 		"",
 		"➡️【请人工处理】",
 		fmt.Sprintf("请直接引用本消息回复。回复将写回上述 Issue 的原评论线程，并交给 %s 继续处理。", candidate.AgentName),
@@ -205,6 +205,13 @@ func (m *TaskSilentExitMonitor) notifyCandidate(ctx context.Context, candidate d
 			"task_id", util.UUIDToString(candidate.TaskID),
 			"error", err)
 	}
+}
+
+func silentExitDetectionResult(kind string) string {
+	if kind == "user_reply" {
+		return "Agent Task 已处理用户的飞书回复，但没有发现新的飞书回复或后续 Task，本次交互可能没有闭环。"
+	}
+	return "Task 已完成，但没有发现后续 Task、等待人工通知或最终完成通知，工作流可能停在了这里。"
 }
 
 func silentExitProgressTiming(commentAt pgtype.Timestamptz, completedAt time.Time, location *time.Location) string {

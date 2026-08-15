@@ -174,3 +174,12 @@ func TestSilentExitProgressLimitsOnlyQuotedBody(t *testing.T) {
 		t.Fatalf("quoted markdown = %q", quoted)
 	}
 }
+
+func TestSilentExitDetectionResultMatchesCandidateKind(t *testing.T) {
+	if got := silentExitDetectionResult("user_reply"); !strings.Contains(got, "用户的飞书回复") || !strings.Contains(got, "没有闭环") {
+		t.Fatalf("user reply result = %q", got)
+	}
+	if got := silentExitDetectionResult("workflow_handoff"); !strings.Contains(got, "没有发现后续 Task") || !strings.Contains(got, "工作流可能停在了这里") {
+		t.Fatalf("workflow handoff result = %q", got)
+	}
+}
